@@ -181,8 +181,8 @@ export const walletService = {
     return response.data
   },
 
-  requestWithdrawal: async (amount: number, bankDetails: unknown): Promise<any> => {
-    const response = await api.post('/wallet/withdraw', { amount, ...bankDetails })
+  requestWithdrawal: async (amount: number, bankDetails: any): Promise<any> => {
+    const response = await api.post('/wallet/withdraw', { amount, ...(bankDetails as Record<string, any>) })
     return response.data
   },
 

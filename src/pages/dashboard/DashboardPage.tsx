@@ -14,12 +14,12 @@ import {
   ChevronRight,
   Plus
 } from 'lucide-react'
+import { useAuth } from '@/contexts/AuthContext'
 import { useAppSelector } from '@/store/hooks'
 import { LineChart as ReLineChart, Line, ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip } from 'recharts'
 
 const DashboardPage = () => {
-  const { user } = useAppSelector((state) => state.auth)
-  const { balance } = useAppSelector((state) => state.wallet)
+  const { profile } = useAuth()
   const { summary, holdings } = useAppSelector((state) => state.portfolio)
 
   // Sample data for charts
@@ -63,7 +63,7 @@ const DashboardPage = () => {
       >
         <div>
           <h1 className="text-2xl lg:text-3xl font-bold text-white">
-            Welcome back, {user?.firstName || 'Trader'}! 👋
+            Welcome back, {profile?.name || 'Trader'}! 👋
           </h1>
           <p className="text-gray-400 mt-1">
             Here's what's happening with your portfolio today.
@@ -90,9 +90,9 @@ const DashboardPage = () => {
             <span className="text-xs text-gray-400">Available</span>
           </div>
           <p className="text-2xl lg:text-3xl font-bold text-white mb-1">
-            ₹{balance.available.toLocaleString()}
+            ₹{(profile?.balance || 0).toLocaleString()}
           </p>
-          <p className="text-gray-400 text-sm">Demo Balance</p>
+          <p className="text-gray-400 text-sm">Available Balance</p>
         </motion.div>
 
         <motion.div

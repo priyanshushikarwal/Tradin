@@ -14,8 +14,8 @@ import {
   Clock,
   XCircle
 } from 'lucide-react'
-import { walletService, settingsService } from '@/services/api'
-import { wsService } from '@/services/websocket'
+import { depositService, settingsService } from '@/services/supabaseService'
+import { useAuth } from '@/contexts/AuthContext'
 import toast from 'react-hot-toast'
 
 interface DepositModalProps {
@@ -45,6 +45,7 @@ const DEFAULT_BANK_DETAILS: BankDetails = {
 
 const DepositModal = ({ isOpen, onClose, userId, onSuccess }: DepositModalProps) => {
   const navigate = useNavigate()
+  const { refreshProfile } = useAuth()
   const [step, setStep] = useState<DepositStep>('amount')
   const [amount, setAmount] = useState('')
   const [screenshot, setScreenshot] = useState<File | null>(null)
@@ -60,16 +61,16 @@ const DepositModal = ({ isOpen, onClose, userId, onSuccess }: DepositModalProps)
     const fetchSettings = async () => {
       setIsLoadingQr(true)
       try {
-        // Fetch QR code
-        const qrResponse = await settingsService.getPaymentQrCode()
-        if (qrResponse.paymentQrCode) {
-          setPaymentQrCode(qrResponse.paymentQrCode)
+        // Fetch all settings
+        const settings = await settingsService.getAll()
+        if (settings.qr_code) {
+          setPaymentQrCode(settings.qr_code)
         }
         
         // Fetch bank details
         const bankResponse = await settingsService.getBankDetails()
-        if (bankResponse.bankDetails) {
-          setBankDetails(bankResponse.bankDetails)
+        if (bankResponse) {
+          setBankDetails(bankResponse)
         }
       } catch (error) {
         console.log('Failed to fetch settings')
@@ -83,49 +84,55 @@ const DepositModal = ({ isOpen, onClose, userId, onSuccess }: DepositModalProps)
     }
   }, [isOpen])
 
-  // Listen for deposit status updates
+  // Poll for deposit status updates (replaces WebSocket)
   useEffect(() => {
-    if (!isOpen || step !== 'processing') return
+    if (!isOpen || step !== 'processing' || !userId) return
 
-    // Ensure WebSocket is connected
-    wsService.connect()
+    let isCancelled = false
     
-    const socket = (wsService as any).socket
-    if (!socket) return
-    
-    const handleDepositStatusUpdate = (data: { userId: string; status: string; amount?: number; rejectionReason?: string }) => {
-      console.log('💵 Deposit status update in modal:', data)
-      if (data.userId === userId) {
-        if (data.status === 'approved') {
-          setStep('success')
-          toast.success(`Deposit of NPR ${data.amount?.toLocaleString()} approved!`)
-          
-          // Redirect after 5 seconds
-          setTimeout(() => {
-            onSuccess()
-            resetModal()
-            navigate('/wallet')
-          }, 5000)
-        } else if (data.status === 'rejected') {
-          setRejectionReason(data.rejectionReason || 'No reason provided')
-          setStep('failed')
-          toast.error(`Deposit rejected: ${data.rejectionReason || 'No reason provided'}`)
-          
-          // Redirect after 5 seconds
-          setTimeout(() => {
-            resetModal()
-            navigate('/wallet')
-          }, 5000)
+    const checkDepositStatus = async () => {
+      try {
+        const deposits = await depositService.getUserDeposits(userId)
+        const latestDeposit = deposits[0]
+        
+        if (latestDeposit && !isCancelled) {
+          if (latestDeposit.status === 'approved') {
+            setStep('success')
+            toast.success(`Deposit of NPR ${parseFloat(latestDeposit.amount).toLocaleString()} approved!`)
+            await refreshProfile()
+            
+            setTimeout(() => {
+              onSuccess()
+              resetModal()
+              navigate('/wallet')
+            }, 5000)
+          } else if (latestDeposit.status === 'rejected') {
+            setRejectionReason(latestDeposit.admin_note || 'No reason provided')
+            setStep('failed')
+            toast.error(`Deposit rejected: ${latestDeposit.admin_note || 'No reason provided'}`)
+            
+            setTimeout(() => {
+              resetModal()
+              navigate('/wallet')
+            }, 5000)
+          }
         }
+      } catch (error) {
+        console.error('Error checking deposit status:', error)
       }
     }
 
-    socket.on('depositStatusUpdate', handleDepositStatusUpdate)
+    // Check immediately
+    checkDepositStatus()
+    
+    // Then poll every 5 seconds
+    const interval = setInterval(checkDepositStatus, 5000)
 
     return () => {
-      socket.off('depositStatusUpdate', handleDepositStatusUpdate)
+      isCancelled = true
+      clearInterval(interval)
     }
-  }, [isOpen, step, userId, navigate, onSuccess])
+  }, [isOpen, step, userId, navigate, onSuccess, refreshProfile])
 
   // Prevent back button and refresh during processing
   useEffect(() => {
@@ -201,17 +208,15 @@ const DepositModal = ({ isOpen, onClose, userId, onSuccess }: DepositModalProps)
         try {
           const base64Screenshot = reader.result as string
           
-          // Submit deposit request to server
-          await walletService.deposit(parseFloat(amount), 'upi', '', {
-            utrNumber,
-            screenshot: base64Screenshot
-          })
+          // Submit deposit request to Supabase
+          await depositService.create(userId, parseFloat(amount), base64Screenshot)
           
+          toast.success('Deposit request submitted! Waiting for admin approval.')
           // Stay in processing step until admin approves/rejects
         } catch (error: any) {
           console.error('Deposit submission error:', error)
           setStep('upload_proof')
-          toast.error(error.response?.data?.message || 'Failed to submit deposit')
+          toast.error(error.message || 'Failed to submit deposit')
         }
       }
       reader.readAsDataURL(screenshot)

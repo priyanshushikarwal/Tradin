@@ -2,14 +2,12 @@ import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { TrendingUp, Mail, Lock, Eye, EyeOff, Phone, User, ArrowRight, Check } from 'lucide-react'
-import { useAppDispatch, useAppSelector } from '@/store/hooks'
-import { signup, clearError } from '@/store/slices/authSlice'
+import { useAuth } from '@/contexts/AuthContext'
 import toast from 'react-hot-toast'
 
 const SignupPage = () => {
-  const dispatch = useAppDispatch()
+  const { signUp, user, loading } = useAuth()
   const navigate = useNavigate()
-  const { isAuthenticated, isLoading, error } = useAppSelector((state) => state.auth)
 
   const [formData, setFormData] = useState({
     firstName: '',
@@ -21,19 +19,13 @@ const SignupPage = () => {
   })
   const [showPassword, setShowPassword] = useState(false)
   const [agreeTerms, setAgreeTerms] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (user) {
       navigate('/dashboard', { replace: true })
     }
-  }, [isAuthenticated, navigate])
-
-  useEffect(() => {
-    if (error) {
-      toast.error(error)
-      dispatch(clearError())
-    }
-  }, [error, dispatch])
+  }, [user, navigate])
 
   const passwordStrength = () => {
     const password = formData.password
@@ -74,16 +66,28 @@ const SignupPage = () => {
       return
     }
 
-    dispatch(signup({
-      firstName: formData.firstName,
-      lastName: formData.lastName,
-      email: formData.email,
-      phone: formData.phone,
-      password: formData.password,
-    }))
+    setIsLoading(true)
+    const fullName = `${formData.firstName} ${formData.lastName}`.trim()
+    const { error } = await signUp(formData.email, formData.password, fullName)
+    setIsLoading(false)
+
+    if (error) {
+      toast.error(error.message || 'Signup failed')
+    } else {
+      toast.success('Account created! Please check your email to verify.')
+      navigate('/login')
+    }
   }
 
   const strength = passwordStrength()
+
+  if (loading) {
+    return (
+      <div className="min-h-[calc(100vh-80px)] flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-purple-500/30 border-t-purple-500 rounded-full animate-spin" />
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-[calc(100vh-80px)] flex items-center justify-center py-12 px-4">

@@ -18,8 +18,7 @@ import {
   CheckCircle,
   Loader2,
 } from 'lucide-react'
-import { useAppSelector, useAppDispatch } from '@/store/hooks'
-import { updateBalance, addTransaction } from '@/store/slices/walletSlice'
+import { useAuth } from '@/contexts/AuthContext'
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, ComposedChart, Cell, ReferenceLine } from 'recharts'
 
 interface CandleData {
@@ -88,8 +87,7 @@ const durationOptions = [
 
 const TradePage = () => {
   const { symbol } = useParams<{ symbol: string }>()
-  const dispatch = useAppDispatch()
-  const { balance } = useAppSelector((state) => state.wallet)
+  const { profile } = useAuth()
   
   // Get stock config
   const currentSymbol = symbol || 'BTC'
@@ -113,6 +111,12 @@ const TradePage = () => {
   const [showResultModal, setShowResultModal] = useState(false)
   const [lastResult, setLastResult] = useState<TradeResult | null>(null)
 
+  // Demo trading balance (starts with profile balance)
+  const [demoBalance, setDemoBalance] = useState({
+    available: profile?.balance || 0,
+    invested: 0
+  })
+
   // Price stats
   const [stats] = useState({
     high24h: basePrice * 1.03,
@@ -124,7 +128,17 @@ const TradePage = () => {
   // Current price state
   const [currentPrice, setCurrentPrice] = useState(basePrice)
   const [priceChange, setPriceChange] = useState(0)
-  const [displayedBalance, setDisplayedBalance] = useState(balance.available)
+  
+  // Use demo balance for trading
+  const [displayedBalance, setDisplayedBalance] = useState(demoBalance.available)
+  
+  // Sync demo balance with profile when profile changes
+  useEffect(() => {
+    if (profile?.balance !== undefined && demoBalance.available === 0 && demoBalance.invested === 0) {
+      setDemoBalance({ available: profile.balance, invested: 0 })
+      setDisplayedBalance(profile.balance)
+    }
+  }, [profile?.balance])
 
   // Chart data state
   const [candleData, setCandleData] = useState<CandleData[]>([])
@@ -167,7 +181,7 @@ const TradePage = () => {
 
   // Animate balance changes
   useEffect(() => {
-    const targetBalance = balance.available
+    const targetBalance = demoBalance.available
     const diff = targetBalance - displayedBalance
     
     if (Math.abs(diff) < 0.01) {
@@ -187,7 +201,7 @@ const TradePage = () => {
     }, 30)
 
     return () => clearInterval(interval)
-  }, [balance.available, displayedBalance])
+  }, [demoBalance.available, displayedBalance])
 
   // Generate order book
   const generateOrderBook = useCallback((price: number) => {
@@ -386,25 +400,13 @@ const TradePage = () => {
       result: userWins ? 'win' : 'loss'
     }
 
-    // Update wallet balance
-    const newAvailable = balance.available + trade.amount + profit
-    const newTotal = balance.total + profit
+    // Update demo balance
+    const newAvailable = demoBalance.available + trade.amount + profit
     
-    dispatch(updateBalance({
+    setDemoBalance({
       available: parseFloat(newAvailable.toFixed(2)),
-      total: parseFloat(newTotal.toFixed(2)),
-      invested: Math.max(0, balance.invested - trade.amount)
-    }))
-
-    // Add transaction
-    dispatch(addTransaction({
-      id: Date.now().toString(),
-      type: userWins ? 'profit' : 'loss',
-      amount: Math.abs(profit),
-      status: 'completed',
-      date: new Date().toISOString(),
-      description: `${trade.type.toUpperCase()} ${stockConfig.symbol} - ${userWins ? 'Profit' : 'Loss'}`
-    }))
+      invested: Math.max(0, demoBalance.invested - trade.amount)
+    })
 
     // Show result
     setLastResult(result)
@@ -418,7 +420,7 @@ const TradePage = () => {
 
     // Auto-hide modal after 3 seconds
     setTimeout(() => setShowResultModal(false), 3000)
-  }, [balance, dispatch, stockConfig.symbol])
+  }, [demoBalance, stockConfig.symbol])
 
   // Trade countdown timer
   useEffect(() => {
@@ -446,7 +448,7 @@ const TradePage = () => {
       return
     }
     
-    if (amount > balance.available) {
+    if (amount > demoBalance.available) {
       alert('Insufficient balance')
       return
     }
@@ -456,11 +458,11 @@ const TradePage = () => {
       return
     }
 
-    // Deduct from balance
-    dispatch(updateBalance({
-      available: balance.available - amount,
-      invested: balance.invested + amount
-    }))
+    // Deduct from demo balance
+    setDemoBalance({
+      available: demoBalance.available - amount,
+      invested: demoBalance.invested + amount
+    })
 
     // Get outcome from natural pattern (70:30 ratio)
     const outcome = getNextOutcome()
@@ -1073,7 +1075,7 @@ const TradePage = () => {
               <div className="flex justify-between text-sm mb-2">
                 <span className="text-gray-400">Amount</span>
                 <span className="text-gray-400">
-                  Available: <span className="text-emerald-400">${balance.available.toFixed(2)}</span>
+                  Available: <span className="text-emerald-400">${demoBalance.available.toFixed(2)}</span>
                 </span>
               </div>
               <div className="relative">

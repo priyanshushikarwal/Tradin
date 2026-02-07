@@ -19,7 +19,7 @@ import {
   Loader2,
   X
 } from 'lucide-react'
-import { adminService } from '@/services/api'
+import { depositService } from '@/services/supabaseService'
 import toast from 'react-hot-toast'
 
 interface Deposit {
@@ -57,8 +57,26 @@ const AdminDepositsPage = () => {
   const fetchDeposits = async () => {
     setLoading(true)
     try {
-      const data = await adminService.getDeposits()
-      setDeposits(data as Deposit[])
+      const data = await depositService.getAllDeposits()
+      // Map Supabase data to expected format
+      const formattedDeposits = data.map(d => ({
+        id: d.id,
+        userId: d.user_id,
+        userName: d.profiles?.name || 'Unknown',
+        userEmail: d.profiles?.email || 'Unknown',
+        amount: d.amount,
+        method: d.method,
+        transactionId: d.transaction_id,
+        upiId: d.upi_id,
+        utrNumber: d.utr_number,
+        bankName: d.bank_name,
+        accountNumber: d.account_number,
+        status: d.status as 'pending' | 'approved' | 'rejected',
+        createdAt: d.created_at,
+        proofUrl: d.screenshot_url,
+        screenshot: d.screenshot_url
+      }))
+      setDeposits(formattedDeposits as Deposit[])
     } catch (error) {
       console.error('Failed to fetch deposits:', error)
       toast.error('Failed to load deposits')
@@ -131,7 +149,7 @@ const AdminDepositsPage = () => {
     if (!selectedDeposit) return
     setProcessing(true)
     try {
-      await adminService.approveDeposit(selectedDeposit.id)
+      await depositService.approve(selectedDeposit.id, selectedDeposit.userId, selectedDeposit.amount)
       toast.success(`Deposit of ₹${selectedDeposit.amount.toLocaleString()} approved!`)
       setShowApproveModal(false)
       setSelectedDeposit(null)
@@ -152,7 +170,7 @@ const AdminDepositsPage = () => {
     }
     setProcessing(true)
     try {
-      await adminService.rejectDeposit(selectedDeposit.id, rejectionReason)
+      await depositService.reject(selectedDeposit.id, rejectionReason)
       toast.success('Deposit rejected')
       setShowRejectModal(false)
       setSelectedDeposit(null)

@@ -1,4 +1,4 @@
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { 
   TrendingUp, 
   Menu, 
@@ -12,14 +12,15 @@ import {
 } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { useAppSelector, useAppDispatch } from '@/store/hooks'
+import { useAppDispatch } from '@/store/hooks'
 import { toggleSidebar } from '@/store/slices/uiSlice'
-import { logout } from '@/store/slices/authSlice'
+import { useAuth } from '@/contexts/AuthContext'
+import toast from 'react-hot-toast'
 
 const DashboardNavbar = () => {
   const dispatch = useAppDispatch()
-  const { user } = useAppSelector((state) => state.auth)
-  const { balance } = useAppSelector((state) => state.wallet)
+  const navigate = useNavigate()
+  const { profile, signOut } = useAuth()
   const [isProfileOpen, setIsProfileOpen] = useState(false)
   const [isSearchOpen, setIsSearchOpen] = useState(false)
   const profileRef = useRef<HTMLDivElement>(null)
@@ -43,8 +44,10 @@ const DashboardNavbar = () => {
     }
   }, [isSearchOpen])
 
-  const handleLogout = () => {
-    dispatch(logout())
+  const handleLogout = async () => {
+    await signOut()
+    toast.success('Logged out successfully')
+    navigate('/login')
   }
 
   return (
@@ -95,7 +98,7 @@ const DashboardNavbar = () => {
           <div className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-xl bg-[#12131a]/80 border border-white/10">
             <Wallet className="w-4 h-4 text-purple-400" />
             <span className="text-sm font-semibold text-white">
-              ₹{balance.available.toLocaleString()}
+              ₹{(profile?.balance || 0).toLocaleString()}
             </span>
           </div>
 
@@ -112,13 +115,13 @@ const DashboardNavbar = () => {
               className="flex items-center gap-2 p-1.5 rounded-xl hover:bg-white/5 transition-colors"
             >
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-purple-500 to-cyan-400 flex items-center justify-center text-white font-semibold text-sm">
-                {user?.firstName?.[0] || 'U'}
+                {profile?.name?.[0] || 'U'}
               </div>
               <div className="hidden lg:block text-left">
                 <p className="text-sm font-medium text-white">
-                  {user?.firstName} {user?.lastName}
+                  {profile?.name || 'User'}
                 </p>
-                <p className="text-xs text-gray-400">{user?.email}</p>
+                <p className="text-xs text-gray-400">{profile?.email}</p>
               </div>
             </button>
 
@@ -134,9 +137,9 @@ const DashboardNavbar = () => {
                 >
                   <div className="px-3 py-2 border-b border-white/10 mb-2">
                     <p className="text-sm font-medium text-white">
-                      {user?.firstName} {user?.lastName}
+                      {profile?.name || 'User'}
                     </p>
-                    <p className="text-xs text-gray-400">{user?.email}</p>
+                    <p className="text-xs text-gray-400">{profile?.email}</p>
                   </div>
 
                   <Link

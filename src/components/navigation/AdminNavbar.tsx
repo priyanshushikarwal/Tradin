@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   Bell,
@@ -11,12 +11,12 @@ import {
   Shield,
   AlertCircle
 } from 'lucide-react'
-import { useAppSelector, useAppDispatch } from '@/store/hooks'
-import { logout } from '@/store/slices/authSlice'
+import { useAuth } from '@/contexts/AuthContext'
+import toast from 'react-hot-toast'
 
 const AdminNavbar = () => {
-  const { user } = useAppSelector((state) => state.auth)
-  const dispatch = useAppDispatch()
+  const { profile, signOut } = useAuth()
+  const navigate = useNavigate()
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [showNotifications, setShowNotifications] = useState(false)
 
@@ -27,8 +27,14 @@ const AdminNavbar = () => {
     { id: '4', type: 'support', message: 'High priority ticket opened', time: '2 hours ago' },
   ]
 
-  const handleLogout = () => {
-    dispatch(logout())
+  const handleLogout = async () => {
+    try {
+      await signOut()
+      toast.success('Logged out successfully')
+      navigate('/login')
+    } catch (error) {
+      toast.error('Failed to logout')
+    }
   }
 
   return (
@@ -116,7 +122,7 @@ const AdminNavbar = () => {
             </div>
             <div className="hidden md:block text-left">
               <p className="text-white font-medium text-sm">Admin</p>
-              <p className="text-gray-400 text-xs">{user?.email}</p>
+              <p className="text-gray-400 text-xs">{profile?.email}</p>
             </div>
             <ChevronDown className="w-4 h-4 text-gray-400 hidden md:block" />
           </button>

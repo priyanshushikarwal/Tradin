@@ -18,10 +18,10 @@ import {
   ChevronRight,
   AlertCircle
 } from 'lucide-react'
-import { useAppSelector } from '@/store/hooks'
+import { useAuth } from '@/contexts/AuthContext'
 
 const ProfilePage = () => {
-  const { user } = useAppSelector((state) => state.auth)
+  const { profile } = useAuth()
   const [activeTab, setActiveTab] = useState('personal')
   const [showPassword, setShowPassword] = useState(false)
   const [notifications, setNotifications] = useState({
@@ -34,11 +34,12 @@ const ProfilePage = () => {
     marketing: false
   })
 
+  const nameParts = profile?.name?.split(' ') || ['', '']
   const [formData, setFormData] = useState({
-    firstName: user?.firstName || 'John',
-    lastName: user?.lastName || 'Doe',
-    email: user?.email || 'john.doe@example.com',
-    phone: user?.phone || '+91 98765 43210',
+    firstName: nameParts[0] || 'John',
+    lastName: nameParts.slice(1).join(' ') || 'Doe',
+    email: profile?.email || 'john.doe@example.com',
+    phone: profile?.phone || '+91 98765 43210',
     currentPassword: '',
     newPassword: '',
     confirmPassword: ''

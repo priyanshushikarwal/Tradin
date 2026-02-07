@@ -14,21 +14,16 @@ import {
   Copy,
   Download
 } from 'lucide-react'
-import { useAppSelector, useAppDispatch } from '@/store/hooks'
-import { settingsService, walletService } from '@/services/api'
-import wsService from '@/services/websocket'
+import { useAuth } from '@/contexts/AuthContext'
+import { settingsService, depositService, withdrawalService } from '@/services/supabaseService'
 import { Transaction } from '@/types'
-import { setBalance } from '@/store/slices/walletSlice'
-import toast from 'react-hot-toast'
-import { WithdrawalModal, UnholdAccountModal } from '@/components/withdrawal'
+import { UnholdAccountModal } from '@/components/withdrawal'
 import { DepositModal } from '@/components/deposit'
 
 type TransactionType = 'all' | 'deposit' | 'withdrawal' | 'trade'
 
 const WalletPage = () => {
-  const dispatch = useAppDispatch()
-  const { balance } = useAppSelector((state) => state.wallet)
-  const { user } = useAppSelector((state) => state.auth)
+  const { user, profile, refreshProfile } = useAuth()
   const [activeModal, setActiveModal] = useState<'deposit' | 'withdraw' | null>(null)
   const [filterType, setFilterType] = useState<TransactionType>('all')
   const [transactions, setTransactions] = useState<Transaction[]>([])
@@ -48,13 +43,21 @@ const WalletPage = () => {
   const [hasPendingUnholdRequest, setHasPendingUnholdRequest] = useState(false)
   const [showBlockedActionModal, setShowBlockedActionModal] = useState(false)
 
+  // Balance from profile
+  const balance = {
+    available: profile?.balance || 0,
+    blocked: 0,
+    invested: 0,
+    total: profile?.balance || 0
+  }
+
   // Fetch WhatsApp number from server
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const whatsappData = await settingsService.getWhatsappNumber()
-        if (whatsappData?.whatsappNumber) {
-          setWhatsappNumber(whatsappData.whatsappNumber)
+        const settings = await settingsService.getAll()
+        if (settings?.whatsapp_number) {
+          setWhatsappNumber(settings.whatsapp_number)
         }
       } catch (error) {
         console.error('Failed to fetch settings:', error)
@@ -65,26 +68,53 @@ const WalletPage = () => {
   }, [])
 
   const checkUnholdStatus = async () => {
-    try {
-      const status = await walletService.getUnholdStatus()
-      setHasPendingUnholdRequest(status.hasPendingUnholdRequest)
-    } catch (error) {
-      console.error('Failed to check unhold status:', error)
-    }
+    // Check if account is on hold
+    setHasPendingUnholdRequest(profile?.account_status === 'hold')
   }
 
   const refreshWalletData = async () => {
+    if (!profile) return
     try {
       setLoadingTransactions(true)
-      const [balanceData, transactionData] = await Promise.all([
-        walletService.getBalance(),
-        walletService.getTransactions()
+      
+      // Fetch deposits and withdrawals
+      const [deposits, withdrawals] = await Promise.all([
+        depositService.getUserDeposits(profile.id),
+        withdrawalService.getUserWithdrawals(profile.id)
       ])
-      dispatch(setBalance(balanceData as { available: number; blocked: number; invested: number; total: number }))
-      setTransactions(transactionData || [])
+
+      // Convert to transactions format
+      const depositTransactions: Transaction[] = (deposits || []).map((d: any) => ({
+        id: d.id,
+        type: 'deposit' as const,
+        amount: parseFloat(d.amount),
+        status: d.status,
+        createdAt: d.created_at,
+        description: 'Deposit',
+        failureReason: d.admin_note
+      }))
+
+      const withdrawalTransactions: Transaction[] = (withdrawals || []).map((w: any) => ({
+        id: w.id,
+        type: 'withdrawal' as const,
+        amount: parseFloat(w.amount),
+        status: w.status,
+        createdAt: w.created_at,
+        description: 'Withdrawal',
+        failureReason: w.admin_note
+      }))
+
+      // Combine and sort by date
+      const allTransactions = [...depositTransactions, ...withdrawalTransactions]
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      
+      setTransactions(allTransactions)
+      
+      // Refresh profile to get updated balance
+      await refreshProfile()
       
       // Check unhold status
-      await checkUnholdStatus()
+      checkUnholdStatus()
     } catch (error) {
       console.error('Failed to refresh wallet data:', error)
       setTransactions([])
@@ -97,177 +127,21 @@ const WalletPage = () => {
   useEffect(() => {
     refreshWalletData()
     checkUnholdStatus()
-  }, [])
+  }, [profile?.id])
 
-  // Listen for withdrawal and deposit status updates via WebSocket
+  // Listen for withdrawal and deposit status updates via Supabase Realtime
   useEffect(() => {
-    // Ensure WebSocket is connected
-    wsService.connect()
+    if (!profile?.id) return
     
-    // Function to setup listeners
-    const setupListeners = () => {
-      const socket = (wsService as any).socket
-      console.log('🔌 WebSocket status:', socket ? 'exists' : 'null', 'connected:', socket?.connected, 'user:', user?.id)
-      
-      if (!socket || !user?.id) {
-        console.log('⏳ Socket not ready, retrying in 1 second...')
-        return null
-      }
-      
-      const handleStatusUpdate = (data: { userId: string; status: string; refundAmount?: number; withdrawalId?: string; newBalance?: number }) => {
-        console.log('💰 Wallet page received WebSocket update:', data)
-        console.log('Current user ID:', user.id)
-        
-        if (data.userId === user.id) {
-          console.log('✅ User ID matches, updating wallet...')
-          
-          // If newBalance is provided, update it immediately in Redux
-          if (data.newBalance !== undefined) {
-            console.log(`💵 Immediately updating balance to: ${data.newBalance}`)
-            const currentBalance = balance
-            dispatch(setBalance({
-              available: data.newBalance - (currentBalance?.blocked || 0),
-              blocked: currentBalance?.blocked || 0,
-              invested: currentBalance?.invested || 0,
-              total: data.newBalance
-            }))
-          }
-          
-          // Refresh transaction history and balance from server
-          setTimeout(() => {
-            console.log('🔄 Refreshing wallet data from server...')
-            refreshWalletData()
-          }, 500) // Small delay to ensure backend has updated
-          
-          // Show toast notification
-          if (data.status === 'failed' && data.refundAmount) {
-            toast.error(`Withdrawal failed! NPR ${data.refundAmount.toLocaleString()} refunded to your wallet`, {
-              duration: 5000,
-              icon: '🔄',
-              style: {
-                background: '#1a1b23',
-                color: '#fff',
-                border: '1px solid rgba(239, 68, 68, 0.3)'
-              }
-            })
-          } else if (data.status === 'completed') {
-            toast.success('Withdrawal completed successfully!', {
-              duration: 3000,
-              icon: '✅'
-            })
-          } else if (data.status === 'rejected') {
-            toast.error('Withdrawal rejected by admin', {
-              duration: 4000,
-              icon: '❌'
-            })
-          }
-        } else {
-          console.log('❌ User ID does not match')
-        }
-      }
-      
-      socket.on('withdrawalStatusUpdate', handleStatusUpdate)
-      console.log('🎧 WebSocket listener registered for withdrawalStatusUpdate')
-      
-      // Listen for deposit status updates
-      const handleDepositStatusUpdate = (data: { userId: string; status: string; amount?: number; newBalance?: number; rejectionReason?: string }) => {
-        console.log('💵 Deposit status update received:', data)
-        if (data.userId === user.id) {
-          console.log('✅ Deposit status update for current user')
-          
-          // If newBalance is provided, update it immediately in Redux
-          if (data.newBalance !== undefined) {
-            const currentBalance = balance
-            dispatch(setBalance({
-              available: data.newBalance - (currentBalance?.blocked || 0),
-              blocked: currentBalance?.blocked || 0,
-              invested: currentBalance?.invested || 0,
-              total: data.newBalance
-            }))
-          }
-          
-          // Refresh transaction history
-          setTimeout(() => {
-            refreshWalletData()
-          }, 500)
-          
-          // Show toast notification
-          if (data.status === 'approved') {
-            toast.success(`Deposit of NPR ${data.amount?.toLocaleString()} approved!`, {
-              duration: 4000,
-              icon: '✅',
-              style: {
-                background: '#1a1b23',
-                color: '#fff',
-                border: '1px solid rgba(34, 197, 94, 0.3)'
-              }
-            })
-          } else if (data.status === 'rejected') {
-            toast.error(`Deposit rejected: ${data.rejectionReason || 'No reason provided'}`, {
-              duration: 5000,
-              icon: '❌',
-              style: {
-                background: '#1a1b23',
-                color: '#fff',
-                border: '1px solid rgba(239, 68, 68, 0.3)'
-              }
-            })
-          }
-        }
-      }
-      
-      socket.on('depositStatusUpdate', handleDepositStatusUpdate)
-      console.log('🎧 WebSocket listener registered for depositStatusUpdate')
-      
-      // Listen for account status updates (unhold approval)
-      const handleAccountStatusUpdate = (data: { userId: string; status: string }) => {
-        console.log('🔓 Account status update received:', data)
-        if (data.userId === user.id && data.status === 'active') {
-          toast.success('Your account has been reactivated! You can now make deposits and withdrawals.', {
-            duration: 6000,
-            icon: '✅',
-            style: {
-              background: '#1a1b23',
-              color: '#fff',
-              border: '1px solid rgba(34, 197, 94, 0.3)'
-            }
-          })
-          // Refresh wallet data and unhold status
-          refreshWalletData()
-          checkUnholdStatus()
-        }
-      }
-      
-      socket.on('accountStatusUpdate', handleAccountStatusUpdate)
-      console.log('🎧 WebSocket listener registered for accountStatusUpdate')
-      
-      return () => {
-        console.log('🔇 Removing WebSocket listeners')
-        socket.off('withdrawalStatusUpdate', handleStatusUpdate)
-        socket.off('depositStatusUpdate', handleDepositStatusUpdate)
-        socket.off('accountStatusUpdate', handleAccountStatusUpdate)
-      }
-    }
-    
-    // Try to setup listeners immediately
-    let cleanup = setupListeners()
-    
-    // If socket wasn't ready, retry after a delay
-    let retryInterval: NodeJS.Timeout | null = null
-    if (!cleanup) {
-      retryInterval = setInterval(() => {
-        cleanup = setupListeners()
-        if (cleanup && retryInterval) {
-          clearInterval(retryInterval)
-        }
-      }, 1000)
-    }
+    // Set up polling for now (can be replaced with Supabase Realtime later)
+    const pollInterval = setInterval(() => {
+      refreshWalletData()
+    }, 30000) // Poll every 30 seconds
     
     return () => {
-      if (cleanup) cleanup()
-      if (retryInterval) clearInterval(retryInterval)
+      clearInterval(pollInterval)
     }
-  }, [user?.id])
+  }, [profile?.id])
 
   const filteredTransactions = transactions.filter(t => {
     if (filterType === 'all') return true
@@ -560,8 +434,8 @@ const WalletPage = () => {
         onSuccess={refreshWalletData}
       />
 
-      {/* Withdraw Modal - New Component */}
-      <WithdrawalModal
+      {/* Withdraw Modal - Coming Soon */}
+      {/* <WithdrawalModal
         isOpen={activeModal === 'withdraw'}
         onClose={() => {
           setActiveModal(null)
@@ -571,7 +445,7 @@ const WalletPage = () => {
         whatsappNumber={whatsappNumber}
         userId={user?.id || ''}
         retryTransaction={retryTransaction}
-      />
+      /> */}
 
       {/* Failure Reason Modal */}
       <AnimatePresence>

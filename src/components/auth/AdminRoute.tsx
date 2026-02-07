@@ -1,6 +1,6 @@
 import { ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
-import { useAppSelector } from '@/store/hooks'
+import { useAuth } from '@/contexts/AuthContext'
 import LoadingScreen from '@/components/ui/LoadingScreen'
 
 interface AdminRouteProps {
@@ -8,18 +8,18 @@ interface AdminRouteProps {
 }
 
 const AdminRoute = ({ children }: AdminRouteProps) => {
-  const { user, isAuthenticated, isLoading } = useAppSelector((state) => state.auth)
+  const { user, profile, loading } = useAuth()
   const location = useLocation()
 
-  if (isLoading) {
+  if (loading) {
     return <LoadingScreen />
   }
 
-  if (!isAuthenticated) {
+  if (!user) {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 
-  if (user?.role !== 'admin' && user?.role !== 'support') {
+  if (profile?.role !== 'admin') {
     return <Navigate to="/dashboard" replace />
   }
 

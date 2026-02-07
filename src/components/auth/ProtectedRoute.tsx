@@ -1,6 +1,6 @@
 import { ReactNode } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
-import { useAppSelector } from '@/store/hooks'
+import { useAuth } from '@/contexts/AuthContext'
 import LoadingScreen from '@/components/ui/LoadingScreen'
 
 interface ProtectedRouteProps {
@@ -8,14 +8,14 @@ interface ProtectedRouteProps {
 }
 
 const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
-  const { isAuthenticated, isLoading } = useAppSelector((state) => state.auth)
+  const { user, loading } = useAuth()
   const location = useLocation()
 
-  if (isLoading) {
+  if (loading) {
     return <LoadingScreen />
   }
 
-  if (!isAuthenticated) {
+  if (!user) {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
 

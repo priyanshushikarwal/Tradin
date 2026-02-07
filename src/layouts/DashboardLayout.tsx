@@ -1,40 +1,11 @@
 import { Outlet } from 'react-router-dom'
-import { useEffect } from 'react'
-import { useAppSelector, useAppDispatch } from '@/store/hooks'
+import { useAppSelector } from '@/store/hooks'
 import DashboardNavbar from '@/components/navigation/DashboardNavbar'
 import DashboardSidebar from '@/components/navigation/DashboardSidebar'
 import MobileBottomNav from '@/components/navigation/MobileBottomNav'
-import { wsService } from '@/services/websocket'
-import { setBalance } from '@/store/slices/walletSlice'
 
 const DashboardLayout = () => {
-  const dispatch = useAppDispatch()
   const { isSidebarOpen } = useAppSelector((state) => state.ui)
-  const { user } = useAppSelector((state) => state.auth)
-
-  useEffect(() => {
-    // Sync wallet balance from user's server balance
-    if (user && user.balance !== undefined && user.balance !== null) {
-      const balanceNum = typeof user.balance === 'string' ? parseFloat(user.balance) : user.balance
-      if (!isNaN(balanceNum)) {
-        dispatch(setBalance({
-          total: balanceNum,
-          available: balanceNum,
-          blocked: 0,
-          invested: 0,
-        }))
-      }
-    }
-  }, [user, dispatch])
-
-  useEffect(() => {
-    // Connect to WebSocket for live prices
-    wsService.connect()
-    
-    return () => {
-      wsService.disconnect()
-    }
-  }, [])
 
   return (
     <div className="min-h-screen bg-dark-bg">

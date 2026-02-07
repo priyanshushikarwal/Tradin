@@ -235,7 +235,7 @@ export interface DepositRequest {
 export interface WithdrawalRequest {
   amount: number
   bankAccount: string
-  ifsc: string
+  ifsc?: string
   accountHolder: string
 }
 

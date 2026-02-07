@@ -1,0 +1,1158 @@
+import { useState, useEffect, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import {
+  X,
+  AlertCircle,
+  CheckCircle,
+  Upload,
+  QrCode,
+  XCircle,
+  MessageCircle
+} from 'lucide-react'
+import { walletService } from '@/services/api'
+import { wsService } from '@/services/websocket'
+import toast from 'react-hot-toast'
+
+interface WithdrawalModalProps {
+  isOpen: boolean
+  onClose: () => void
+  balance: number
+  whatsappNumber: string
+  userId: string
+  retryTransaction?: any
+}
+
+type WithdrawalStep = 'form' | 'loading' | 'payment_required' | 'bank_charge_payment' | 'payment_proof' | 'waiting_for_admin' | 'processing' | 'on_hold' | 'failed' | 'success' | 'suspended'
+
+const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, retryTransaction }: WithdrawalModalProps) => {
+  const [step, setStep] = useState<WithdrawalStep>('form')
+  const [amount, setAmount] = useState('')
+  const [currentWithdrawal, setCurrentWithdrawal] = useState<any>(null)
+  const [hasAttemptedOnce, setHasAttemptedOnce] = useState(false)
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null)
+
+  // Payment proof states
+  const [screenshot, setScreenshot] = useState<File | null>(null)
+  const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null)
+  const [utrNumber, setUtrNumber] = useState('')
+  const [profitAmount, setProfitAmount] = useState(0)
+  const [failureReason, setFailureReason] = useState('')
+  const [refundAmount, setRefundAmount] = useState(0)
+  const [processingTimeLeft, setProcessingTimeLeft] = useState(60) // 60 seconds countdown
+
+  // Handle retry transaction - skip to bank charge payment
+  useEffect(() => {
+    if (isOpen && retryTransaction) {
+      const initRetry = async () => {
+        setAmount(retryTransaction.amount.toString())
+        const calculatedProfit = retryTransaction.amount * 0.5
+        setProfitAmount(calculatedProfit)
+        
+        try {
+          // Create a new withdrawal request for the retry
+          const response = await walletService.requestWithdrawal(retryTransaction.amount, {
+            deductImmediately: false,
+            serverCharge: 0
+          })
+          
+          setCurrentWithdrawal(response.withdrawal)
+          setStep('bank_charge_payment')
+        } catch (error: any) {
+          toast.error(error.response?.data?.message || 'Failed to create withdrawal request')
+          setStep('form')
+        }
+      }
+      
+      initRetry()
+    } else if (isOpen) {
+      // Reset for new withdrawal
+      setStep('form')
+    }
+  }, [isOpen, retryTransaction])
+
+  // Countdown timer for processing step
+  useEffect(() => {
+    if (step === 'processing') {
+      setProcessingTimeLeft(60) // Reset to 60 seconds
+      
+      const timer = setInterval(() => {
+        setProcessingTimeLeft((prev) => {
+          if (prev <= 1) {
+            clearInterval(timer)
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+
+      return () => clearInterval(timer)
+    }
+  }, [step])
+
+  // Poll for withdrawal status when waiting for admin OR processing
+  useEffect(() => {
+    if ((step === 'waiting_for_admin' || step === 'processing') && currentWithdrawal?.id) {
+      // Start polling every 3 seconds
+      pollingIntervalRef.current = setInterval(async () => {
+        try {
+          const statusData = await walletService.getWithdrawalStatus(userId) as { withdrawal?: { status: string; failureReason?: string; amount?: number; serverCharge?: number } }
+          
+          console.log('📊 Polling withdrawal status:', statusData)
+          
+          if (statusData?.withdrawal?.status === 'processing' && step === 'waiting_for_admin') {
+            // Admin has started processing!
+            toast.success('Admin has started processing your withdrawal!')
+            setStep('processing')
+          } else if (statusData?.withdrawal?.status === 'on_hold') {
+            console.log('⏸️ Polling detected on_hold status')
+            // Account put on hold
+            setFailureReason(statusData.withdrawal.failureReason || 'Account on hold due to technical server errors caused in the transaction')
+            setStep('on_hold')
+            
+            // Clear polling
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current)
+              pollingIntervalRef.current = null
+            }
+          } else if (statusData?.withdrawal?.status === 'rejected') {
+            console.log('❌ Polling detected rejected status')
+            // Withdrawal rejected by admin
+            const totalRefund = (statusData.withdrawal.amount || 0) + (statusData.withdrawal.serverCharge || 0)
+            setFailureReason(statusData.withdrawal.failureReason || statusData.withdrawal.rejectionReason || 'Withdrawal rejected by admin')
+            setRefundAmount(totalRefund)
+            setStep('failed')
+            
+            // Clear polling
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current)
+              pollingIntervalRef.current = null
+            }
+          } else if (statusData?.withdrawal?.status === 'failed') {
+            console.log('❌ Polling detected failed status')
+            // Withdrawal failed - refund received
+            const totalRefund = (statusData.withdrawal.amount || 0) + (statusData.withdrawal.serverCharge || 0)
+            setFailureReason(statusData.withdrawal.failureReason || 'Auto-failed after 1 minute')
+            setRefundAmount(totalRefund)
+            setStep('failed')
+            
+            // Clear polling
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current)
+              pollingIntervalRef.current = null
+            }
+          } else if (statusData?.withdrawal?.status === 'completed') {
+            console.log('✅ Polling detected completed status!')
+            // Withdrawal succeeded!
+            setStep('success')
+            
+            // Clear polling
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current)
+              pollingIntervalRef.current = null
+            }
+
+            // Auto redirect after 5 seconds
+            setTimeout(() => {
+              window.location.href = '/dashboard/wallet'
+            }, 5000)
+          }
+        } catch (error) {
+          console.error('Failed to check withdrawal status:', error)
+        }
+      }, 3000)
+
+      // Also listen to WebSocket for real-time updates
+      const socket = (wsService as any).socket
+      if (socket) {
+        const handleStatusUpdate = (data: { userId: string; status: string; refundAmount?: number }) => {
+          console.log('🔔 WebSocket withdrawal update received:', data)
+          console.log('Current user ID:', userId)
+          console.log('Current step:', step)
+          
+          if (data.userId === userId) {
+            console.log('✅ User ID matches, processing status update')
+            
+            if (data.status === 'processing' && step === 'waiting_for_admin') {
+              toast.success('Admin has started processing your withdrawal!')
+              setStep('processing')
+            } else if (data.status === 'on_hold') {
+              console.log('Setting step to on_hold')
+              setFailureReason((data as any).reason || 'Account on hold due to technical server errors caused in the transaction')
+              setStep('on_hold')
+              
+              if (pollingIntervalRef.current) {
+                clearInterval(pollingIntervalRef.current)
+                pollingIntervalRef.current = null
+              }
+            } else if (data.status === 'rejected') {
+              console.log('Setting step to failed - rejection')
+              setRefundAmount(data.refundAmount || 0)
+              setFailureReason((data as any).reason || (data as any).rejectionReason || 'Withdrawal rejected by admin')
+              setStep('failed')
+              
+              if (pollingIntervalRef.current) {
+                clearInterval(pollingIntervalRef.current)
+                pollingIntervalRef.current = null
+              }
+            } else if (data.status === 'failed') {
+              console.log('Setting step to failed')
+              setRefundAmount(data.refundAmount || 0)
+              setFailureReason((data as any).reason || (data as any).failureReason || 'Auto-failed after 1 minute')
+              setStep('failed')
+              
+              if (pollingIntervalRef.current) {
+                clearInterval(pollingIntervalRef.current)
+                pollingIntervalRef.current = null
+              }
+            } else if (data.status === 'completed') {
+              console.log('🎉 Setting step to success!')
+              setStep('success')
+              
+              if (pollingIntervalRef.current) {
+                clearInterval(pollingIntervalRef.current)
+                pollingIntervalRef.current = null
+              }
+
+              setTimeout(() => {
+                window.location.href = '/dashboard/wallet'
+              }, 5000)
+            }
+          } else {
+            console.log('❌ User ID does not match')
+          }
+        }
+        socket.on('withdrawalStatusUpdate', handleStatusUpdate)
+        
+        return () => {
+          socket.off('withdrawalStatusUpdate', handleStatusUpdate)
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current)
+            pollingIntervalRef.current = null
+          }
+        }
+      }
+    }
+
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current)
+        pollingIntervalRef.current = null
+      }
+    }
+  }, [step, currentWithdrawal, userId])
+
+  const handleRequestWithdrawal = async () => {
+    const withdrawAmount = parseFloat(amount)
+    console.log('Withdrawal attempt:', { withdrawAmount, balance, userBalance: balance, hasAttemptedOnce })
+    if (!withdrawAmount || withdrawAmount <= 0) {
+      toast.error('Please enter a valid amount')
+      return
+    }
+    if (withdrawAmount > balance) {
+      toast.error(`Insufficient balance (have: NPR ${balance}, need: NPR ${withdrawAmount})`)
+      return
+    }
+    if (withdrawAmount < 100) {
+      toast.error('Minimum withdrawal amount is NPR 100')
+      return
+    }
+
+    setStep('loading')
+    
+    // Calculate profit (for demo, assuming profit is the withdrawal amount minus initial investment)
+    // In real scenario, this should come from backend or be calculated based on actual trades
+    const calculatedProfit = withdrawAmount * 0.5 // Assuming 50% of withdrawal is profit
+    setProfitAmount(calculatedProfit)
+    
+    try {
+      // Create the first withdrawal request on backend
+      const response = await walletService.requestWithdrawal(withdrawAmount, {
+        deductImmediately: false, // Don't deduct yet
+        serverCharge: 0 // No server charge paid yet
+      })
+      
+      setCurrentWithdrawal(response.withdrawal)
+      
+      // Show payment required dialog
+      setTimeout(() => {
+        setStep('payment_required')
+        setHasAttemptedOnce(true)
+        toast.error('To withdraw customer must pay the server charge')
+      }, 1000)
+    } catch (error: any) {
+      setStep('form')
+      // Check if account is suspended
+      if (error.response?.data?.suspended) {
+        setStep('suspended')
+      } else {
+        toast.error(error.response?.data?.message || 'Failed to submit withdrawal request')
+      }
+    }
+  }
+
+  const handlePayAndWithdraw = async () => {
+    // Go directly to payment proof for normal withdrawals (first and second attempts)
+    setStep('payment_proof')
+  }
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) { // 5MB limit
+        toast.error('File size should be less than 5MB')
+        return
+      }
+      if (!file.type.startsWith('image/')) {
+        toast.error('Please upload an image file')
+        return
+      }
+      setScreenshot(file)
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        setScreenshotPreview(reader.result as string)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const handleSubmitPaymentProof = async () => {
+    if (!screenshot) {
+      toast.error('Please upload payment screenshot')
+      return
+    }
+    if (!utrNumber.trim()) {
+      toast.error('Please enter UTR/Transaction number')
+      return
+    }
+    if (!currentWithdrawal) {
+      toast.error('No withdrawal request found')
+      return
+    }
+
+    try {
+      setStep('loading')
+      
+      // Convert screenshot to base64
+      const reader = new FileReader()
+      reader.onloadend = async () => {
+        try {
+          const base64Screenshot = reader.result as string
+          
+          // Update existing withdrawal with payment proof
+          const response = await walletService.submitPaymentProof(currentWithdrawal.id, {
+            utrNumber: utrNumber,
+            serverCharge: profitAmount * 0.18,
+            screenshot: base64Screenshot
+          })
+          
+          setCurrentWithdrawal(response.withdrawal)
+          setStep('waiting_for_admin')
+          toast.success('Payment proof submitted. Waiting for admin to process...')
+        } catch (error: any) {
+          console.error('Payment proof submission error:', error)
+          setStep('payment_proof')
+          const errorMessage = error.response?.data?.message || error.message || 'Failed to submit payment proof'
+          toast.error(errorMessage)
+        }
+      }
+      reader.readAsDataURL(screenshot)
+      
+    } catch (error: any) {
+      console.error('Payment proof submission error:', error)
+      setStep('payment_proof')
+      const errorMessage = error.response?.data?.message || error.message || 'Failed to submit payment proof'
+      toast.error(errorMessage)
+    }
+  }
+
+  const resetModal = () => {
+    setAmount('')
+    setStep('form')
+    setCurrentWithdrawal(null)
+    setHasAttemptedOnce(false)
+    setScreenshot(null)
+    setScreenshotPreview(null)
+    setUtrNumber('')
+    setProfitAmount(0)
+    onClose()
+  }
+
+  if (!isOpen) return null
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+        onClick={() => (step === 'form' || step === 'payment_required' || step === 'payment_proof') ? resetModal() : undefined}
+      >
+        <motion.div
+          initial={{ scale: 0.95, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.95, opacity: 0 }}
+          className="glass-card p-6 w-full max-w-md overflow-hidden"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Form Step */}
+          {step === 'form' && (
+            <>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold text-white">Withdraw Funds</h2>
+                <button
+                  onClick={resetModal}
+                  className="p-2 rounded-xl hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="p-4 rounded-xl bg-[#12131a]">
+                  <p className="text-gray-400 text-sm mb-1">Available for Withdrawal</p>
+                  <p className="text-2xl font-bold text-white">NPR {balance.toLocaleString()}</p>
+                </div>
+
+                <div>
+                  <label className="text-gray-400 text-sm mb-2 block">Amount</label>
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 text-lg">₹</span>
+                    <input
+                      type="number"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      placeholder="0"
+                      max={balance}
+                      className="input-glass pl-8 text-2xl font-bold w-full"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setAmount(Math.floor(balance * 0.25).toString())}
+                    className="flex-1 py-2 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm font-medium transition-colors"
+                  >
+                    25%
+                  </button>
+                  <button
+                    onClick={() => setAmount(Math.floor(balance * 0.5).toString())}
+                    className="flex-1 py-2 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm font-medium transition-colors"
+                  >
+                    50%
+                  </button>
+                  <button
+                    onClick={() => setAmount(Math.floor(balance * 0.75).toString())}
+                    className="flex-1 py-2 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm font-medium transition-colors"
+                  >
+                    75%
+                  </button>
+                  <button
+                    onClick={() => setAmount(balance.toString())}
+                    className="flex-1 py-2 rounded-xl bg-white/5 text-gray-400 hover:text-white text-sm font-medium transition-colors"
+                  >
+                    Max
+                  </button>
+                </div>
+
+                <button
+                  onClick={handleRequestWithdrawal}
+                  disabled={!amount}
+                  className="w-full btn-primary py-4 text-lg font-semibold bg-danger hover:bg-danger/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Request Withdrawal
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* Loading Step */}
+          {step === 'loading' && (
+            <div className="py-12">
+              <div className="flex flex-col items-center justify-center">
+                <motion.div
+                  className="w-24 h-24 rounded-full border-4 border-purple-500/30 border-t-purple-500 mb-6"
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+                />
+                <motion.p
+                  className="text-white font-medium text-lg"
+                  animate={{ opacity: [0.5, 1, 0.5] }}
+                  transition={{ duration: 1.5, repeat: Infinity }}
+                >
+                  Processing...
+                </motion.p>
+              </div>
+            </div>
+          )}
+
+          {/* Payment Required Step */}
+          {step === 'payment_required' && (
+            <div className="py-8">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold text-white">Server Charge Required</h2>
+                <button
+                  onClick={resetModal}
+                  className="p-2 rounded-xl hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex flex-col items-center justify-center mb-6">
+                <motion.div
+                  initial={{ scale: 0, rotate: -180 }}
+                  animate={{ scale: 1, rotate: 0 }}
+                  transition={{ type: 'spring', duration: 0.6 }}
+                  className="w-24 h-24 rounded-full bg-gradient-to-br from-yellow-500 to-orange-500 flex items-center justify-center mb-4"
+                >
+                  <AlertCircle className="w-12 h-12 text-white" />
+                </motion.div>
+
+                <motion.p
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="text-gray-300 text-center mb-2"
+                >
+                  To withdraw customer must pay the server charge
+                </motion.p>
+
+                <div className="p-4 rounded-xl bg-[#12131a] w-full mb-4">
+                  <p className="text-gray-400 text-sm mb-1">Withdrawal Amount</p>
+                  <p className="text-2xl font-bold text-white">NPR {parseFloat(amount).toLocaleString()}</p>
+                </div>
+              </div>
+
+              <motion.button
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.5 }}
+                onClick={handlePayAndWithdraw}
+                className="w-full btn-primary py-4 text-lg font-semibold bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700"
+              >
+                Pay & Withdraw
+              </motion.button>
+
+              <button
+                onClick={resetModal}
+                className="w-full mt-3 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {/* Bank Charge Payment Step */}
+          {step === 'bank_charge_payment' && (
+            <div className="py-6">
+              <motion.div
+                initial={{ scale: 0, rotate: -180 }}
+                animate={{ scale: 1, rotate: 0 }}
+                transition={{ type: 'spring', duration: 0.6 }}
+                className="w-20 h-20 mx-auto rounded-full bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center mb-6 shadow-lg shadow-orange-500/30"
+              >
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ delay: 0.3, type: 'spring' }}
+                >
+                  <AlertCircle className="w-10 h-10 text-white stroke-[2.5]" />
+                </motion.div>
+              </motion.div>
+
+              <motion.h3
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="text-2xl font-bold text-white text-center mb-2"
+              >
+                Pay Bank Electronic Charge
+              </motion.h3>
+
+              <motion.p
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+                className="text-gray-300 text-center mb-6"
+              >
+                Complete the bank electronic charge payment to proceed with your withdrawal
+              </motion.p>
+
+              <div className="space-y-4">
+                <div className="p-4 rounded-xl bg-orange-500/10 border border-orange-500/20">
+                  <p className="text-orange-400 text-sm text-center font-medium mb-3">
+                    Bank Electronic Charge Details
+                  </p>
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-gray-400">Withdrawal Amount:</span>
+                      <span className="text-white font-semibold">NPR {parseFloat(amount).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-gray-400">Your Profit:</span>
+                      <span className="text-white font-semibold">NPR {profitAmount.toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm pt-2 border-t border-orange-500/20">
+                      <span className="text-gray-400">Bank Electronic Charge (18%):</span>
+                      <span className="text-yellow-400 font-bold text-lg">NPR {(profitAmount * 0.18).toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-orange-500/20">
+                    <div className="flex items-center justify-center gap-2 bg-green-500/20 border border-green-500/30 rounded-lg px-3 py-2">
+                      <CheckCircle className="w-4 h-4 text-green-400" />
+                      <span className="text-green-400 text-xs font-semibold">100% REFUNDABLE</span>
+                    </div>
+                    <p className="text-gray-400 text-xs text-center mt-2">
+                      This charge will be fully refunded after bank verification
+                    </p>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-blue-400 font-semibold text-sm mb-1">Important Notice</p>
+                      <p className="text-gray-300 text-xs">
+                        You need to pay the bank electronic charge to process your withdrawal. After payment, you'll upload the proof.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <motion.button
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5 }}
+                  onClick={() => setStep('payment_proof')}
+                  className="w-full btn-primary py-4 text-lg font-semibold bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600"
+                >
+                  Proceed to Pay Charge
+                </motion.button>
+
+                <button
+                  onClick={resetModal}
+                  className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Payment Proof Step */}
+          {step === 'payment_proof' && (
+            <div className="py-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold text-white">Upload Payment Proof</h2>
+                <button
+                  onClick={() => setStep('bank_charge_payment')}
+                  className="p-2 rounded-xl hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-4"
+              >
+                <div className="p-4 rounded-xl bg-orange-500/10 border border-orange-500/20">
+                  <p className="text-orange-400 text-sm text-center font-medium mb-2">
+                    Upload proof of bank charge payment
+                  </p>
+                  <div className="flex justify-between items-center text-sm">
+                    <span className="text-gray-400">Amount Paid:</span>
+                    <span className="text-yellow-400 font-bold">NPR {(profitAmount * 0.18).toLocaleString()}</span>
+                  </div>
+                </div>
+
+                {/* QR Code Section */}
+                <div className="p-4 rounded-xl bg-[#12131a] border border-white/10">
+                  <div className="flex items-center gap-2 mb-3">
+                    <QrCode className="w-5 h-5 text-purple-400" />
+                    <h3 className="text-white font-semibold">Scan QR to Pay</h3>
+                  </div>
+                  <div className="bg-white p-4 rounded-lg flex items-center justify-center">
+                    <div className="w-48 h-48 bg-gradient-to-br from-purple-100 to-blue-100 rounded-lg flex items-center justify-center">
+                      <QrCode className="w-32 h-32 text-purple-600" />
+                    </div>
+                  </div>
+                  <p className="text-gray-400 text-xs text-center mt-2">
+                    Scan this QR code with your payment app
+                  </p>
+                </div>
+
+                {/* Upload Screenshot */}
+                <div>
+                  <label className="text-gray-400 text-sm mb-2 block font-medium">
+                    Upload Payment Screenshot *
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleFileUpload}
+                      className="hidden"
+                      id="screenshot-upload"
+                    />
+                    <label
+                      htmlFor="screenshot-upload"
+                      className="flex items-center justify-center gap-2 p-4 rounded-xl bg-[#12131a] border-2 border-dashed border-white/20 hover:border-purple-500/50 cursor-pointer transition-colors"
+                    >
+                      <Upload className="w-5 h-5 text-gray-400" />
+                      <span className="text-gray-400">
+                        {screenshot ? screenshot.name : 'Click to upload'}
+                      </span>
+                    </label>
+                  </div>
+                  {screenshotPreview && (
+                    <div className="mt-2 relative">
+                      <img
+                        src={screenshotPreview}
+                        alt="Payment screenshot"
+                        className="w-full h-32 object-cover rounded-lg"
+                      />
+                      <button
+                        onClick={() => {
+                          setScreenshot(null)
+                          setScreenshotPreview(null)
+                        }}
+                        className="absolute top-2 right-2 p-1 bg-red-500 rounded-full hover:bg-red-600 transition-colors"
+                      >
+                        <X className="w-4 h-4 text-white" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* UTR Number Input */}
+                <div>
+                  <label className="text-gray-400 text-sm mb-2 block font-medium">
+                    UTR / Transaction Number *
+                  </label>
+                  <input
+                    type="text"
+                    value={utrNumber}
+                    onChange={(e) => setUtrNumber(e.target.value)}
+                    placeholder="Enter UTR or Transaction ID"
+                    className="input-glass w-full"
+                  />
+                </div>
+
+                {/* Continue Button */}
+                <motion.button
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  onClick={handleSubmitPaymentProof}
+                  disabled={!screenshot || !utrNumber.trim()}
+                  className="w-full btn-primary py-4 text-lg font-semibold bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Continue
+                </motion.button>
+
+                <button
+                  onClick={() => setStep('payment_required')}
+                  className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white transition-colors"
+                >
+                  Back
+                </button>
+              </motion.div>
+            </div>
+          )}
+
+          {/* Waiting for Admin Step */}
+          {step === 'waiting_for_admin' && (
+            <div className="py-8">
+              <div className="flex flex-col items-center justify-center">
+                <motion.div
+                  className="w-32 h-32 rounded-full bg-gradient-to-br from-yellow-500 to-orange-500 flex items-center justify-center mb-6 shadow-lg shadow-orange-500/30"
+                >
+                  <motion.div
+                    className="w-24 h-24 rounded-full border-4 border-white/30 border-t-white"
+                    animate={{ rotate: 360 }}
+                    transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
+                  />
+                </motion.div>
+
+                <motion.h3
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="text-2xl font-bold text-white mb-2"
+                >
+                  Waiting for Admin
+                </motion.h3>
+
+                <motion.p
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="text-gray-400 text-center mb-6 max-w-xs"
+                >
+                  Your withdrawal request has been submitted. Please wait while admin processes your request.
+                </motion.p>
+
+                <div className="w-full p-4 rounded-xl bg-orange-500/10 border border-orange-500/20 mb-6">
+                  <p className="text-orange-400 text-sm text-center">
+                    Amount: NPR {parseFloat(amount).toLocaleString()}
+                  </p>
+                  <p className="text-gray-400 text-xs text-center mt-2">
+                    Status: Waiting for Admin to Process
+                  </p>
+                </div>
+
+                <div className="flex gap-2 mb-6">
+                  {[0, 1, 2].map((i) => (
+                    <motion.div
+                      key={i}
+                      className="w-3 h-3 rounded-full bg-orange-500"
+                      animate={{ scale: [1, 1.2, 1], opacity: [0.5, 1, 0.5] }}
+                      transition={{ duration: 1, repeat: Infinity, delay: i * 0.3 }}
+                    />
+                  ))}
+                </div>
+
+                <p className="text-gray-500 text-xs text-center">
+                  Do not close this window. It will automatically update when admin starts processing.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Processing Step - Shows after admin starts processing */}
+          {step === 'processing' && (
+            <div className="py-8">
+              <div className="flex flex-col items-center justify-center">
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: 'spring', duration: 0.6 }}
+                  className="w-32 h-32 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center mb-6 shadow-lg shadow-green-500/30"
+                >
+                  <CheckCircle className="w-16 h-16 text-white" />
+                </motion.div>
+
+                <motion.h3
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="text-2xl font-bold text-white mb-2"
+                >
+                  Processing Started!
+                </motion.h3>
+
+                <motion.p
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="text-gray-400 text-center mb-6 max-w-xs"
+                >
+                  Admin has started processing your withdrawal. It will be completed within 20-30 minutes.
+                </motion.p>
+
+                {/* Timer Display */}
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.5 }}
+                  className="mb-6"
+                >
+                  <div className="flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-gradient-to-r from-blue-500/20 to-purple-500/20 border border-blue-500/30">
+                    <motion.div
+                      animate={{ scale: [1, 1.2, 1] }}
+                      transition={{ duration: 1, repeat: Infinity }}
+                      className="w-2 h-2 rounded-full bg-blue-400"
+                    />
+                    <span className="text-2xl font-bold text-white font-mono">
+                      {Math.floor(processingTimeLeft / 60)}:{String(processingTimeLeft % 60).padStart(2, '0')}
+                    </span>
+                    <span className="text-sm text-gray-400 ml-1">remaining</span>
+                  </div>
+                </motion.div>
+
+                <div className="w-full p-4 rounded-xl bg-green-500/10 border border-green-500/20 mb-6">
+                  <p className="text-green-400 text-sm text-center">
+                    Amount: NPR {parseFloat(amount).toLocaleString()}
+                  </p>
+                  <p className="text-gray-400 text-xs text-center mt-2">
+                    Status: Processing (20-30 mins)
+                  </p>
+                </div>
+
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.6 }}
+                  className="text-gray-500 text-xs text-center"
+                >
+                  Redirecting to wallet in 3 seconds...
+                </motion.p>
+              </div>
+            </div>
+          )}
+
+          {/* Failed Step - Shows when withdrawal fails */}
+          {step === 'failed' && (
+            <div className="py-8">
+              <div className="flex flex-col items-center justify-center">
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: 'spring', duration: 0.6 }}
+                  className="w-32 h-32 rounded-full bg-gradient-to-br from-red-500 to-orange-600 flex items-center justify-center mb-6 shadow-lg shadow-red-500/30"
+                >
+                  <XCircle className="w-16 h-16 text-white" />
+                </motion.div>
+
+                <motion.h3
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="text-2xl font-bold text-white mb-2"
+                >
+                  Withdrawal Failed
+                </motion.h3>
+
+                <motion.p
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="text-gray-400 text-center mb-6 max-w-xs"
+                >
+                  {failureReason}
+                </motion.p>
+
+                <div className="w-full p-4 rounded-xl bg-green-500/10 border border-green-500/20 mb-6">
+                  <p className="text-green-400 text-sm text-center font-semibold mb-2">
+                    ✓ Full Refund Processed
+                  </p>
+                  <p className="text-white text-lg text-center font-bold">
+                    NPR {refundAmount.toLocaleString()}
+                  </p>
+                  <p className="text-gray-400 text-xs text-center mt-2">
+                    The amount has been refunded to your wallet
+                  </p>
+                </div>
+
+                <motion.button
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.6 }}
+                  onClick={resetModal}
+                  className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white transition-colors"
+                >
+                  Close
+                </motion.button>
+              </div>
+            </div>
+          )}
+
+          {/* Account on Hold Step */}
+          {step === 'on_hold' && (
+            <div className="py-8">
+              <div className="flex flex-col items-center justify-center">
+                <motion.div
+                  initial={{ scale: 0, rotate: -180 }}
+                  animate={{ scale: 1, rotate: 0 }}
+                  transition={{ type: 'spring', duration: 0.6 }}
+                  className="w-32 h-32 rounded-full bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center mb-6 shadow-lg shadow-orange-500/30"
+                >
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ delay: 0.3, type: 'spring' }}
+                  >
+                    <AlertCircle className="w-16 h-16 text-white stroke-[2]" />
+                  </motion.div>
+                </motion.div>
+
+                <motion.h3
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="text-2xl font-bold text-white mb-2"
+                >
+                  Account on Hold
+                </motion.h3>
+
+                <motion.p
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="text-gray-400 text-center mb-6 max-w-xs"
+                >
+                  {failureReason || 'Account on hold due to technical server errors caused in the transaction'}
+                </motion.p>
+
+                <div className="w-full p-4 rounded-xl bg-orange-500/10 border border-orange-500/20 mb-6">
+                  <p className="text-orange-400 text-sm text-center font-semibold mb-2">
+                    ⚠️ Action Required
+                  </p>
+                  <p className="text-gray-300 text-sm text-center">
+                    Your account has been temporarily placed on hold. Please check your transaction history to unhold your account.
+                  </p>
+                </div>
+
+                <button
+                  onClick={resetModal}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-500 to-cyan-400 hover:from-purple-600 hover:to-cyan-500 text-white font-semibold text-lg transition-all shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50"
+                >
+                  Go to Wallet
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Success Step - Shows when withdrawal succeeds */}
+          {step === 'success' && (
+            <div className="py-8">
+              <div className="flex flex-col items-center justify-center">
+                <motion.div
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: 'spring', duration: 0.6 }}
+                  className="w-32 h-32 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center mb-6 shadow-lg shadow-green-500/30"
+                >
+                  <CheckCircle className="w-16 h-16 text-white" />
+                </motion.div>
+
+                <motion.h3
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="text-2xl font-bold text-white mb-2"
+                >
+                  Withdrawal Successful!
+                </motion.h3>
+
+                <motion.p
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="text-gray-400 text-center mb-6 max-w-xs"
+                >
+                  Your withdrawal request has been completed successfully.
+                </motion.p>
+
+                <div className="w-full p-4 rounded-xl bg-blue-500/10 border border-blue-500/20 mb-6">
+                  <p className="text-blue-400 text-sm text-center font-semibold mb-2">
+                    💰 Amount Processed
+                  </p>
+                  <p className="text-white text-lg text-center font-bold">
+                    NPR {parseFloat(amount).toLocaleString()}
+                  </p>
+                  <p className="text-gray-400 text-xs text-center mt-3">
+                    ⏱️ It may take up to 30 minutes for the balance to appear in your bank account
+                  </p>
+                </div>
+
+                <motion.p
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: 0.6 }}
+                  className="text-gray-500 text-xs text-center"
+                >
+                  Redirecting to wallet in 5 seconds...
+                </motion.p>
+
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.8 }}
+                  className="flex gap-2 mt-4"
+                >
+                  {[0, 1, 2].map((i) => (
+                    <motion.div
+                      key={i}
+                      className="w-3 h-3 rounded-full bg-green-500"
+                      animate={{ scale: [1, 1.2, 1], opacity: [0.5, 1, 0.5] }}
+                      transition={{ duration: 1, repeat: Infinity, delay: i * 0.3 }}
+                    />
+                  ))}
+                </motion.div>
+              </div>
+            </div>
+          )}
+
+          {/* Suspended Step - Shows when account is suspended for suspicious activity */}
+          {step === 'suspended' && (
+            <div className="py-8">
+              <div className="flex flex-col items-center justify-center">
+                <motion.div
+                  initial={{ scale: 0, rotate: -180 }}
+                  animate={{ scale: 1, rotate: 0 }}
+                  transition={{ type: 'spring', duration: 0.6 }}
+                  className="w-32 h-32 rounded-full bg-gradient-to-br from-red-500 to-orange-600 flex items-center justify-center mb-6 shadow-lg shadow-red-500/30"
+                >
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ delay: 0.3, type: 'spring' }}
+                  >
+                    <AlertCircle className="w-16 h-16 text-white stroke-[2]" />
+                  </motion.div>
+                </motion.div>
+
+                <motion.h3
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  className="text-2xl font-bold text-white mb-2 text-center"
+                >
+                  Account Suspended
+                </motion.h3>
+
+                <motion.p
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.4 }}
+                  className="text-gray-300 text-center mb-6 max-w-xs"
+                >
+                  Your account has been suspended due to suspicious activities detected in your transactions.
+                </motion.p>
+
+                <div className="w-full p-4 rounded-xl bg-red-500/10 border border-red-500/20 mb-6">
+                  <p className="text-red-400 text-sm text-center font-semibold mb-2">
+                    ⚠️ Withdrawal Access Blocked
+                  </p>
+                  <p className="text-gray-300 text-sm text-center">
+                    For security reasons, withdrawal functionality has been temporarily disabled. Please contact our support team for assistance.
+                  </p>
+                </div>
+
+                <motion.button
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.6 }}
+                  onClick={() => {
+                    // Redirect to WhatsApp
+                    const message = encodeURIComponent('Hello, my account has been suspended due to suspicious activities. I need help with my withdrawal.')
+                    window.open(`https://wa.me/${whatsappNumber}?text=${message}`, '_blank')
+                  }}
+                  className="w-full py-4 rounded-xl bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-semibold transition-all shadow-lg shadow-green-500/30 hover:shadow-green-500/50 flex items-center justify-center gap-2"
+                >
+                  <MessageCircle className="w-5 h-5" />
+                  Contact Support on WhatsApp
+                </motion.button>
+
+                <button
+                  onClick={resetModal}
+                  className="w-full mt-3 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white transition-colors"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          )}
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  )
+}
+
+export default WithdrawalModal

@@ -1,0 +1,7 @@
+export { default as AdminDashboardPage } from './AdminDashboardPage'
+export { default as AdminUsersPage } from './AdminUsersPage'
+export { default as AdminKycPage } from './AdminKycPage'
+export { default as AdminDepositsPage } from './AdminDepositsPage'
+export { default as AdminWithdrawalsPage } from './AdminWithdrawalsPage'
+export { default as AdminSupportPage } from './AdminSupportPage'
+export { default as AdminSettingsPage } from './AdminSettingsPage'

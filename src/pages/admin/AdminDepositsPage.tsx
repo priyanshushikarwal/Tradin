@@ -25,15 +25,19 @@ import toast from 'react-hot-toast'
 interface Deposit {
   id: string
   userId: string
+  userName?: string
+  userEmail?: string
   amount: number
   method: string
   transactionId?: string
   upiId?: string
+  utrNumber?: string
   bankName?: string
   accountNumber?: string
   status: 'pending' | 'approved' | 'rejected'
   createdAt: string
   proofUrl?: string
+  screenshot?: string
 }
 
 const AdminDepositsPage = () => {
@@ -662,6 +666,20 @@ const AdminDepositsPage = () => {
                   <p className="text-2xl font-bold text-emerald-400">₹{selectedDeposit.amount.toLocaleString()}</p>
                 </div>
 
+                {/* Payment Screenshot */}
+                {(selectedDeposit.screenshot || selectedDeposit.proofUrl) && (
+                  <div className="space-y-2">
+                    <p className="text-gray-400 text-sm font-medium">Payment Proof</p>
+                    <div className="rounded-xl overflow-hidden border border-white/10">
+                      <img
+                        src={selectedDeposit.screenshot || selectedDeposit.proofUrl}
+                        alt="Payment proof"
+                        className="w-full h-auto max-h-64 object-contain bg-[#12131a]"
+                      />
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-3">
                   <div className="flex justify-between">
                     <span className="text-gray-400">Deposit ID</span>
@@ -671,10 +689,28 @@ const AdminDepositsPage = () => {
                     <span className="text-gray-400">User ID</span>
                     <span className="text-white">{selectedDeposit.userId}</span>
                   </div>
+                  {selectedDeposit.userName && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">User Name</span>
+                      <span className="text-white">{selectedDeposit.userName}</span>
+                    </div>
+                  )}
+                  {selectedDeposit.userEmail && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Email</span>
+                      <span className="text-white">{selectedDeposit.userEmail}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-gray-400">Method</span>
                     <span className="text-white capitalize">{selectedDeposit.method}</span>
                   </div>
+                  {selectedDeposit.utrNumber && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">UTR Number</span>
+                      <span className="text-white font-mono text-sm">{selectedDeposit.utrNumber}</span>
+                    </div>
+                  )}
                   {selectedDeposit.transactionId && (
                     <div className="flex justify-between">
                       <span className="text-gray-400">Transaction ID</span>
@@ -702,6 +738,32 @@ const AdminDepositsPage = () => {
                     {getStatusBadge(selectedDeposit.status)}
                   </div>
                 </div>
+
+                {/* Action buttons for pending deposits */}
+                {selectedDeposit.status === 'pending' && (
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      onClick={() => {
+                        setShowDetailsModal(false)
+                        handleApprove(selectedDeposit)
+                      }}
+                      className="flex-1 px-4 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white font-medium transition-colors flex items-center justify-center gap-2"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      Approve
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowDetailsModal(false)
+                        handleReject(selectedDeposit)
+                      }}
+                      className="flex-1 px-4 py-3 rounded-xl bg-danger hover:bg-danger/80 text-white font-medium transition-colors flex items-center justify-center gap-2"
+                    >
+                      <XCircle className="w-4 h-4" />
+                      Reject
+                    </button>
+                  </div>
+                )}
 
                 <button
                   onClick={() => setShowDetailsModal(false)}

@@ -52,6 +52,7 @@ interface UnholdRequest {
   userBalance?: number
   unholdCharge: number
   utrNumber: string
+  screenshot?: string
   status: 'pending' | 'approved' | 'rejected'
   createdAt: string
   approvedAt?: string
@@ -87,6 +88,7 @@ const AdminWithdrawalsPage = () => {
   const [selectedUnholdRequest, setSelectedUnholdRequest] = useState<UnholdRequest | null>(null)
   const [showUnholdApproveModal, setShowUnholdApproveModal] = useState(false)
   const [showUnholdRejectModal, setShowUnholdRejectModal] = useState(false)
+  const [showUnholdScreenshotModal, setShowUnholdScreenshotModal] = useState(false)
   const [unholdRejectionReason, setUnholdRejectionReason] = useState('')
   const [activeTab, setActiveTab] = useState<'withdrawals' | 'unhold'>('withdrawals')
 
@@ -837,103 +839,173 @@ const AdminWithdrawalsPage = () => {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass-card overflow-hidden"
+          className="space-y-4"
         >
-          <div className="p-6 border-b border-white/10">
+          <div className="glass-card p-6">
             <h2 className="text-xl font-bold text-white">Account Unhold Requests</h2>
-            <p className="text-gray-400 text-sm mt-1">Review and process unhold requests</p>
+            <p className="text-gray-400 text-sm mt-1">Review payment proofs and process unhold requests</p>
           </div>
 
           {unholdRequests.length === 0 ? (
-            <div className="p-12 text-center">
+            <div className="glass-card p-12 text-center">
               <AlertCircle className="w-12 h-12 text-gray-400 mx-auto mb-4" />
               <p className="text-white font-medium mb-2">No Unhold Requests</p>
               <p className="text-gray-400 text-sm">There are no unhold requests at the moment</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-white/5">
-                  <tr>
-                    <th className="text-left p-4 text-gray-400 font-medium text-sm">User</th>
-                    <th className="text-left p-4 text-gray-400 font-medium text-sm">Wallet Balance</th>
-                    <th className="text-left p-4 text-gray-400 font-medium text-sm">Unhold Charge (18%)</th>
-                    <th className="text-left p-4 text-gray-400 font-medium text-sm">UTR Number</th>
-                    <th className="text-left p-4 text-gray-400 font-medium text-sm">Status</th>
-                    <th className="text-left p-4 text-gray-400 font-medium text-sm">Date</th>
-                    <th className="text-left p-4 text-gray-400 font-medium text-sm">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {unholdRequests.map((request, index) => (
-                    <tr key={request.id} className="border-t border-white/10 hover:bg-white/5">
-                      <td className="p-4">
-                        <div>
-                          <p className="text-white font-medium">{request.userName || 'Unknown'}</p>
-                          <p className="text-gray-400 text-sm">{request.userEmail || 'N/A'}</p>
+            <div className="grid gap-4">
+              {unholdRequests.map((request, index) => (
+                <motion.div
+                  key={request.id}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.05 }}
+                  className={`glass-card overflow-hidden ${
+                    request.status === 'pending' 
+                      ? 'border-l-4 border-l-yellow-500' 
+                      : request.status === 'approved' 
+                        ? 'border-l-4 border-l-green-500' 
+                        : 'border-l-4 border-l-red-500'
+                  }`}
+                >
+                  {/* Header with Request ID and Status */}
+                  <div className="p-4 bg-white/5 border-b border-white/10 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="text-gray-400 text-sm font-mono">#{request.id}</span>
+                      <span className="text-gray-500">•</span>
+                      <span className="text-gray-400 text-sm">{formatDate(request.createdAt)}</span>
+                    </div>
+                    <div>
+                      {request.status === 'pending' && (
+                        <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-yellow-500/20 text-yellow-400 text-sm font-medium">
+                          <Clock className="w-4 h-4" />
+                          Pending Review
+                        </span>
+                      )}
+                      {request.status === 'approved' && (
+                        <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-500/20 text-green-400 text-sm font-medium">
+                          <CheckCircle className="w-4 h-4" />
+                          Approved
+                        </span>
+                      )}
+                      {request.status === 'rejected' && (
+                        <span className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-red-500/20 text-red-400 text-sm font-medium">
+                          <XCircle className="w-4 h-4" />
+                          Rejected
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Main Content */}
+                  <div className="p-5">
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      
+                      {/* User Info Section */}
+                      <div className="space-y-3">
+                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">User Details</h4>
+                        <div className="flex items-center gap-3">
+                          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-white font-bold text-lg">
+                            {(request.userName || 'U')[0].toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="text-white font-semibold text-lg">{request.userName || 'Unknown User'}</p>
+                            <p className="text-gray-400 text-sm">{request.userEmail || 'N/A'}</p>
+                          </div>
                         </div>
-                      </td>
-                      <td className="p-4">
-                        <p className="text-white font-medium">NPR {(request.userBalance || 0).toLocaleString()}</p>
-                      </td>
-                      <td className="p-4">
-                        <p className="text-yellow-400 font-bold">NPR {request.unholdCharge.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
-                      </td>
-                      <td className="p-4">
-                        <p className="text-gray-300 font-mono text-sm">{request.utrNumber}</p>
-                      </td>
-                      <td className="p-4">
+                        <div className="mt-2 p-3 rounded-lg bg-white/5">
+                          <p className="text-gray-400 text-xs mb-1">Current Wallet Balance</p>
+                          <p className="text-white font-bold text-xl">NPR {(request.userBalance || 0).toLocaleString()}</p>
+                        </div>
+                      </div>
+
+                      {/* Payment Details Section */}
+                      <div className="space-y-3">
+                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Payment Details</h4>
+                        <div className="space-y-3">
+                          <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
+                            <p className="text-yellow-400 text-xs mb-1">Unhold Charge (18%)</p>
+                            <p className="text-yellow-400 font-bold text-2xl">NPR {request.unholdCharge.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                          </div>
+                          <div className="p-3 rounded-lg bg-white/5">
+                            <p className="text-gray-400 text-xs mb-1">UTR / Transaction Number</p>
+                            <div className="flex items-center gap-2">
+                              <p className="text-white font-mono font-medium">{request.utrNumber}</p>
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(request.utrNumber)
+                                  toast.success('UTR copied!')
+                                }}
+                                className="p-1 rounded hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Payment Proof & Actions Section */}
+                      <div className="space-y-3">
+                        <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Payment Proof</h4>
+                        {request.screenshot ? (
+                          <div 
+                            className="relative group cursor-pointer rounded-lg overflow-hidden border border-white/10"
+                            onClick={() => {
+                              setSelectedUnholdRequest(request)
+                              setShowUnholdScreenshotModal(true)
+                            }}
+                          >
+                            <img 
+                              src={request.screenshot} 
+                              alt="Payment Proof" 
+                              className="w-full h-32 object-cover"
+                            />
+                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                              <span className="flex items-center gap-2 text-white font-medium">
+                                <Eye className="w-5 h-5" />
+                                View Full Image
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-6 rounded-lg bg-white/5 border border-dashed border-white/20 text-center">
+                            <AlertCircle className="w-8 h-8 text-gray-500 mx-auto mb-2" />
+                            <p className="text-gray-500 text-sm">No screenshot uploaded</p>
+                          </div>
+                        )}
+
+                        {/* Action Buttons */}
                         {request.status === 'pending' && (
-                          <span className="flex items-center gap-1 px-2 py-1 rounded-lg bg-warning/20 text-warning text-xs">
-                            <Clock className="w-3 h-3" />
-                            Pending
-                          </span>
+                          <div className="flex gap-2 mt-4">
+                            <button
+                              onClick={() => handleApproveUnhold(request)}
+                              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-green-500 hover:bg-green-600 text-white font-medium transition-colors"
+                            >
+                              <CheckCircle className="w-4 h-4" />
+                              Approve
+                            </button>
+                            <button
+                              onClick={() => handleRejectUnhold(request)}
+                              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white font-medium transition-colors"
+                            >
+                              <XCircle className="w-4 h-4" />
+                              Reject
+                            </button>
+                          </div>
                         )}
-                        {request.status === 'approved' && (
-                          <span className="flex items-center gap-1 px-2 py-1 rounded-lg bg-success/20 text-success text-xs">
-                            <CheckCircle className="w-3 h-3" />
-                            Approved
-                          </span>
+
+                        {request.status === 'rejected' && request.rejectionReason && (
+                          <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+                            <p className="text-red-400 text-xs mb-1">Rejection Reason</p>
+                            <p className="text-red-300 text-sm">{request.rejectionReason}</p>
+                          </div>
                         )}
-                        {request.status === 'rejected' && (
-                          <span className="flex items-center gap-1 px-2 py-1 rounded-lg bg-danger/20 text-danger text-xs">
-                            <XCircle className="w-3 h-3" />
-                            Rejected
-                          </span>
-                        )}
-                      </td>
-                      <td className="p-4">
-                        <p className="text-gray-400 text-sm">{formatDate(request.createdAt)}</p>
-                      </td>
-                      <td className="p-4">
-                        <div className="flex items-center gap-2">
-                          {request.status === 'pending' && (
-                            <>
-                              <button
-                                onClick={() => handleApproveUnhold(request)}
-                                className="p-2 rounded-lg bg-success/20 hover:bg-success/30 text-success transition-colors"
-                                title="Approve"
-                              >
-                                <CheckCircle className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleRejectUnhold(request)}
-                                className="p-2 rounded-lg bg-danger/20 hover:bg-danger/30 text-danger transition-colors"
-                                title="Reject"
-                              >
-                                <XCircle className="w-4 h-4" />
-                              </button>
-                            </>
-                          )}
-                          {request.status === 'rejected' && request.rejectionReason && (
-                            <p className="text-xs text-gray-400 italic">Reason: {request.rejectionReason}</p>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
             </div>
           )}
         </motion.div>
@@ -1646,6 +1718,97 @@ const AdminWithdrawalsPage = () => {
                         Reject
                       </>
                     )}
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Unhold Screenshot Modal */}
+      <AnimatePresence>
+        {showUnholdScreenshotModal && selectedUnholdRequest && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => setShowUnholdScreenshotModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="glass-card p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold text-white">Payment Proof Screenshot</h2>
+                <button
+                  onClick={() => setShowUnholdScreenshotModal(false)}
+                  className="p-2 rounded-xl hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="p-4 rounded-xl bg-white/5 border border-white/10">
+                  <div className="grid grid-cols-2 gap-4 text-sm mb-4">
+                    <div>
+                      <p className="text-gray-400">User</p>
+                      <p className="text-white font-medium">{selectedUnholdRequest.userName}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400">Email</p>
+                      <p className="text-white font-medium">{selectedUnholdRequest.userEmail}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400">UTR Number</p>
+                      <p className="text-white font-mono">{selectedUnholdRequest.utrNumber}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400">Unhold Charge</p>
+                      <p className="text-yellow-400 font-bold">NPR {selectedUnholdRequest.unholdCharge.toLocaleString(undefined, { maximumFractionDigits: 2 })}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {selectedUnholdRequest.screenshot ? (
+                  <div className="rounded-xl overflow-hidden border border-white/10">
+                    <img 
+                      src={selectedUnholdRequest.screenshot} 
+                      alt="Payment Proof" 
+                      className="w-full h-auto"
+                    />
+                  </div>
+                ) : (
+                  <div className="p-8 text-center rounded-xl bg-white/5 border border-white/10">
+                    <p className="text-gray-400">No screenshot available</p>
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-4">
+                  <button
+                    onClick={() => {
+                      setShowUnholdScreenshotModal(false)
+                      handleRejectUnhold(selectedUnholdRequest)
+                    }}
+                    className="flex-1 px-4 py-3 rounded-xl bg-danger/20 hover:bg-danger/30 border border-danger/20 text-danger font-medium transition-colors flex items-center justify-center gap-2"
+                  >
+                    <XCircle className="w-4 h-4" />
+                    Reject
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowUnholdScreenshotModal(false)
+                      handleApproveUnhold(selectedUnholdRequest)
+                    }}
+                    className="flex-1 px-4 py-3 rounded-xl bg-success hover:bg-success/90 text-white font-medium transition-colors flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle className="w-4 h-4" />
+                    Approve
                   </button>
                 </div>
               </div>

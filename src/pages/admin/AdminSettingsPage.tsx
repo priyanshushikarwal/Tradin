@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import {
   Settings,
@@ -12,9 +12,16 @@ import {
   AlertCircle,
   CheckCircle,
   Loader2,
-  MessageCircle
+  MessageCircle,
+  QrCode,
+  Upload,
+  X,
+  Image,
+  Building2,
+  CreditCard,
+  Copy
 } from 'lucide-react'
-import { adminService } from '@/services/api'
+import { adminService, settingsService } from '@/services/api'
 import toast from 'react-hot-toast'
 
 interface WithdrawalCharges {
@@ -23,6 +30,14 @@ interface WithdrawalCharges {
   bankElectCharge: { label: string; percentage: number }
   serverCommissionHolding: { label: string; percentage: number }
   accountClosure: { label: string; percentage: number }
+}
+
+interface BankDetails {
+  bankName: string
+  accountName: string
+  accountNumber: string
+  ifscCode: string
+  branch: string
 }
 
 interface ChargeConfig {
@@ -37,6 +52,18 @@ const AdminSettingsPage = () => {
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [whatsappNumber, setWhatsappNumber] = useState('919876543210')
+  const [paymentQrCode, setPaymentQrCode] = useState<string>('')
+  const [qrPreview, setQrPreview] = useState<string | null>(null)
+  const qrInputRef = useRef<HTMLInputElement>(null)
+  
+  // Bank details state
+  const [bankDetails, setBankDetails] = useState<BankDetails>({
+    bankName: 'State Bank of India',
+    accountName: 'TradeX Technologies Pvt Ltd',
+    accountNumber: '1234567890123456',
+    ifscCode: 'SBIN0001234',
+    branch: 'Mumbai Main Branch'
+  })
   
   const [charges, setCharges] = useState<ChargeConfig[]>([
     {
@@ -80,7 +107,7 @@ const AdminSettingsPage = () => {
   const fetchSettings = async () => {
     setIsLoading(true)
     try {
-      const settings = await adminService.getSettings() as { withdrawalCharges: WithdrawalCharges; whatsappNumber: string }
+      const settings = await adminService.getSettings() as { withdrawalCharges: WithdrawalCharges; whatsappNumber: string; bankDetails?: BankDetails }
       
       if (settings.withdrawalCharges) {
         setCharges(prev => prev.map(charge => ({
@@ -92,6 +119,21 @@ const AdminSettingsPage = () => {
       
       if (settings.whatsappNumber) {
         setWhatsappNumber(settings.whatsappNumber)
+      }
+
+      if (settings.bankDetails) {
+        setBankDetails(settings.bankDetails)
+      }
+
+      // Fetch payment QR code
+      try {
+        const qrResponse = await settingsService.getPaymentQrCode()
+        if (qrResponse.paymentQrCode) {
+          setPaymentQrCode(qrResponse.paymentQrCode)
+          setQrPreview(qrResponse.paymentQrCode)
+        }
+      } catch (qrError) {
+        console.log('No QR code configured yet')
       }
     } catch (error) {
       console.error('Failed to fetch settings:', error)
@@ -115,6 +157,35 @@ const AdminSettingsPage = () => {
     return charges.reduce((sum, charge) => sum + charge.percentage, 0)
   }
 
+  const handleQrCodeUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) { // 5MB limit
+        toast.error('File size should be less than 5MB')
+        return
+      }
+      if (!file.type.startsWith('image/')) {
+        toast.error('Please upload an image file')
+        return
+      }
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        const base64 = reader.result as string
+        setPaymentQrCode(base64)
+        setQrPreview(base64)
+      }
+      reader.readAsDataURL(file)
+    }
+  }
+
+  const removeQrCode = () => {
+    setPaymentQrCode('')
+    setQrPreview(null)
+    if (qrInputRef.current) {
+      qrInputRef.current.value = ''
+    }
+  }
+
   const handleSave = async () => {
     setIsSaving(true)
     
@@ -128,9 +199,11 @@ const AdminSettingsPage = () => {
         accountClosure: { label: 'Account Closure', percentage: charges.find(c => c.id === 'accountClosure')?.percentage || 0 }
       }
 
-      // Save both charges and WhatsApp number
+      // Save charges, WhatsApp number, QR code, and bank details
       await adminService.updateWithdrawalCharges(chargesObject)
       await adminService.updateWhatsappNumber(whatsappNumber)
+      await adminService.updatePaymentQrCode(paymentQrCode)
+      await adminService.updateBankDetails(bankDetails)
       
       toast.success('Settings saved successfully!')
     } catch (error) {
@@ -152,6 +225,7 @@ const AdminSettingsPage = () => {
     
     setCharges(defaultCharges)
     setWhatsappNumber('919876543210')
+    // Don't reset QR code on reset - user might want to keep it
     toast.success('Settings reset to defaults (click Save to apply)')
   }
 
@@ -362,6 +436,212 @@ const AdminSettingsPage = () => {
           >
             https://wa.me/{whatsappNumber}
           </a>
+        </div>
+      </motion.div>
+
+      {/* Payment QR Code Section */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.25 }}
+        className="glass-card p-6"
+      >
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-3 rounded-xl bg-purple-500/20">
+            <QrCode className="w-6 h-6 text-purple-400" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Payment QR Code</h2>
+            <p className="text-gray-400 text-sm">Upload QR code for unhold charge payments</p>
+          </div>
+        </div>
+
+        <div className="p-4 rounded-xl bg-[#12131a]">
+          <label className="block text-gray-400 text-sm mb-3">
+            QR Code Image (Users will scan this to pay unhold charges)
+          </label>
+          
+          {qrPreview ? (
+            <div className="space-y-4">
+              {/* QR Preview */}
+              <div className="relative inline-block">
+                <div className="bg-white p-4 rounded-xl">
+                  <img 
+                    src={qrPreview} 
+                    alt="Payment QR Code" 
+                    className="w-48 h-48 object-contain"
+                  />
+                </div>
+                <button
+                  onClick={removeQrCode}
+                  className="absolute -top-2 -right-2 p-1 rounded-full bg-red-500 hover:bg-red-600 text-white transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              
+              {/* Change QR Button */}
+              <div>
+                <input
+                  ref={qrInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleQrCodeUpload}
+                  className="hidden"
+                  id="qr-code-upload"
+                />
+                <label
+                  htmlFor="qr-code-upload"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white cursor-pointer transition-colors"
+                >
+                  <Upload className="w-4 h-4" />
+                  Change QR Code
+                </label>
+              </div>
+            </div>
+          ) : (
+            <div>
+              <input
+                ref={qrInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleQrCodeUpload}
+                className="hidden"
+                id="qr-code-upload"
+              />
+              <label
+                htmlFor="qr-code-upload"
+                className="flex flex-col items-center justify-center w-full h-48 border-2 border-dashed border-white/20 rounded-xl hover:border-purple-500/50 hover:bg-purple-500/5 cursor-pointer transition-all"
+              >
+                <div className="p-4 rounded-full bg-purple-500/10 mb-3">
+                  <Image className="w-8 h-8 text-purple-400" />
+                </div>
+                <p className="text-white font-medium">Click to upload QR Code</p>
+                <p className="text-gray-400 text-sm mt-1">PNG, JPG up to 5MB</p>
+              </label>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-blue-400 font-semibold text-sm mb-1">How it works</p>
+              <p className="text-gray-300 text-xs">
+                This QR code will be shown to users when they need to pay unhold charges. 
+                Upload a QR code from your payment app (PhonePe, Paytm, Google Pay, etc.) 
+                so users can scan and pay directly.
+              </p>
+            </div>
+          </div>
+        </div>
+      </motion.div>
+
+      {/* Bank Details Section */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.27 }}
+        className="glass-card p-6"
+      >
+        <div className="flex items-center gap-3 mb-6">
+          <div className="p-3 rounded-xl bg-cyan-500/20">
+            <Building2 className="w-6 h-6 text-cyan-400" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Bank Details</h2>
+            <p className="text-gray-400 text-sm">Configure bank details shown to users for deposits</p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {/* Bank Name */}
+          <div className="p-4 rounded-xl bg-[#12131a]">
+            <label className="block text-gray-400 text-sm mb-2">Bank Name</label>
+            <input
+              type="text"
+              value={bankDetails.bankName}
+              onChange={(e) => setBankDetails(prev => ({ ...prev, bankName: e.target.value }))}
+              placeholder="State Bank of India"
+              className="w-full px-4 py-3 bg-white/5 rounded-xl border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+            />
+          </div>
+
+          {/* Account Name */}
+          <div className="p-4 rounded-xl bg-[#12131a]">
+            <label className="block text-gray-400 text-sm mb-2">Account Holder Name</label>
+            <input
+              type="text"
+              value={bankDetails.accountName}
+              onChange={(e) => setBankDetails(prev => ({ ...prev, accountName: e.target.value }))}
+              placeholder="TradeX Technologies Pvt Ltd"
+              className="w-full px-4 py-3 bg-white/5 rounded-xl border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+            />
+          </div>
+
+          {/* Account Number */}
+          <div className="p-4 rounded-xl bg-[#12131a]">
+            <label className="block text-gray-400 text-sm mb-2">Account Number</label>
+            <input
+              type="text"
+              value={bankDetails.accountNumber}
+              onChange={(e) => setBankDetails(prev => ({ ...prev, accountNumber: e.target.value }))}
+              placeholder="1234567890123456"
+              className="w-full px-4 py-3 bg-white/5 rounded-xl border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+            />
+          </div>
+
+          {/* IFSC Code */}
+          <div className="p-4 rounded-xl bg-[#12131a]">
+            <label className="block text-gray-400 text-sm mb-2">IFSC Code</label>
+            <input
+              type="text"
+              value={bankDetails.ifscCode}
+              onChange={(e) => setBankDetails(prev => ({ ...prev, ifscCode: e.target.value.toUpperCase() }))}
+              placeholder="SBIN0001234"
+              className="w-full px-4 py-3 bg-white/5 rounded-xl border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+            />
+          </div>
+
+          {/* Branch */}
+          <div className="p-4 rounded-xl bg-[#12131a]">
+            <label className="block text-gray-400 text-sm mb-2">Branch</label>
+            <input
+              type="text"
+              value={bankDetails.branch}
+              onChange={(e) => setBankDetails(prev => ({ ...prev, branch: e.target.value }))}
+              placeholder="Mumbai Main Branch"
+              className="w-full px-4 py-3 bg-white/5 rounded-xl border border-white/10 text-white placeholder-gray-500 focus:outline-none focus:border-purple-500"
+            />
+          </div>
+        </div>
+
+        {/* Preview */}
+        <div className="mt-4 p-4 rounded-xl bg-gradient-to-r from-cyan-500/10 to-purple-500/10 border border-cyan-500/20">
+          <p className="text-gray-400 text-sm mb-3 font-medium">Preview (as shown to users):</p>
+          <div className="space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Bank Name</span>
+              <span className="text-white font-medium">{bankDetails.bankName}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Account Name</span>
+              <span className="text-white font-medium">{bankDetails.accountName}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Account Number</span>
+              <span className="text-white font-mono">{bankDetails.accountNumber}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">IFSC Code</span>
+              <span className="text-white font-mono">{bankDetails.ifscCode}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Branch</span>
+              <span className="text-white">{bankDetails.branch}</span>
+            </div>
+          </div>
         </div>
       </motion.div>
 

@@ -176,8 +176,8 @@ export const walletService = {
     return response.data
   },
 
-  deposit: async (amount: number, method: string, discountCode?: string): Promise<{ balance: number; finalAmount: number }> => {
-    const response = await api.post('/wallet/deposit', { amount, method, discountCode })
+  deposit: async (amount: number, method: string, discountCode?: string, paymentProof?: { utrNumber: string; screenshot: string }): Promise<{ balance: number; finalAmount: number; depositId?: string; status?: string }> => {
+    const response = await api.post('/wallet/deposit', { amount, method, discountCode, paymentProof })
     return response.data
   },
 
@@ -210,7 +210,7 @@ export const walletService = {
     return response.data
   },
 
-  submitUnholdPaymentProof: async (data: { utrNumber: string; unholdCharge: number }): Promise<any> => {
+  submitUnholdPaymentProof: async (data: { utrNumber: string; unholdCharge: number; screenshot: string }): Promise<any> => {
     const response = await api.post('/wallet/unhold-payment-proof', data)
     return response.data
   },
@@ -405,6 +405,14 @@ export const adminService = {
   updateWhatsappNumber: async (whatsappNumber: string): Promise<void> => {
     await api.put('/admin/settings/whatsapp', { whatsappNumber })
   },
+
+  updatePaymentQrCode: async (paymentQrCode: string): Promise<void> => {
+    await api.put('/admin/settings/payment-qr', { paymentQrCode })
+  },
+
+  updateBankDetails: async (bankDetails: { bankName: string; accountName: string; accountNumber: string; ifscCode: string; branch: string }): Promise<void> => {
+    await api.put('/admin/settings/bank-details', { bankDetails })
+  },
 }
 
 // Settings Service (public - for users to fetch charges)
@@ -416,6 +424,16 @@ export const settingsService = {
 
   getWhatsappNumber: async (): Promise<{ whatsappNumber: string }> => {
     const response = await api.get('/settings/whatsapp')
+    return response.data
+  },
+
+  getPaymentQrCode: async (): Promise<{ paymentQrCode: string }> => {
+    const response = await api.get('/settings/payment-qr')
+    return response.data
+  },
+
+  getBankDetails: async (): Promise<{ bankDetails: { bankName: string; accountName: string; accountNumber: string; ifscCode: string; branch: string } }> => {
+    const response = await api.get('/settings/bank-details')
     return response.data
   },
 }

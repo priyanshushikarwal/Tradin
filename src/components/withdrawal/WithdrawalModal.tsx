@@ -7,9 +7,10 @@ import {
   Upload,
   QrCode,
   XCircle,
-  MessageCircle
+  MessageCircle,
+  Loader2
 } from 'lucide-react'
-import { walletService } from '@/services/api'
+import { walletService, settingsService } from '@/services/api'
 import { wsService } from '@/services/websocket'
 import toast from 'react-hot-toast'
 
@@ -22,7 +23,7 @@ interface WithdrawalModalProps {
   retryTransaction?: any
 }
 
-type WithdrawalStep = 'form' | 'loading' | 'payment_required' | 'bank_charge_payment' | 'payment_proof' | 'waiting_for_admin' | 'processing' | 'on_hold' | 'failed' | 'success' | 'suspended'
+type WithdrawalStep = 'form' | 'loading' | 'payment_required' | 'server_charge_payment' | 'payment_proof' | 'bank_charge_payment' | 'bank_charge_proof' | 'waiting_for_admin' | 'processing' | 'on_hold' | 'failed' | 'success' | 'suspended'
 
 const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, retryTransaction }: WithdrawalModalProps) => {
   const [step, setStep] = useState<WithdrawalStep>('form')
@@ -35,18 +36,51 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
   const [screenshot, setScreenshot] = useState<File | null>(null)
   const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null)
   const [utrNumber, setUtrNumber] = useState('')
-  const [profitAmount, setProfitAmount] = useState(0)
+  const [serverChargeAmount, setServerChargeAmount] = useState(0)
+  const [serverChargePercentage, setServerChargePercentage] = useState(0)
   const [failureReason, setFailureReason] = useState('')
   const [refundAmount, setRefundAmount] = useState(0)
   const [processingTimeLeft, setProcessingTimeLeft] = useState(60) // 60 seconds countdown
+  const [paymentQrCode, setPaymentQrCode] = useState<string | null>(null)
+  const [isLoadingQr, setIsLoadingQr] = useState(false)
+  const [withdrawalCharges, setWithdrawalCharges] = useState<any>(null)
+
+  // Fetch QR code and withdrawal charges from server
+  useEffect(() => {
+    const fetchSettings = async () => {
+      setIsLoadingQr(true)
+      try {
+        // Fetch QR code
+        const qrResponse = await settingsService.getPaymentQrCode()
+        if (qrResponse.paymentQrCode) {
+          setPaymentQrCode(qrResponse.paymentQrCode)
+        }
+        
+        // Fetch withdrawal charges
+        const chargesResponse = await settingsService.getWithdrawalCharges()
+        setWithdrawalCharges(chargesResponse)
+      } catch (error) {
+        console.log('Failed to fetch settings')
+      } finally {
+        setIsLoadingQr(false)
+      }
+    }
+    
+    if (isOpen) {
+      fetchSettings()
+    }
+  }, [isOpen])
 
   // Handle retry transaction - skip to bank charge payment
   useEffect(() => {
     if (isOpen && retryTransaction) {
       const initRetry = async () => {
         setAmount(retryTransaction.amount.toString())
-        const calculatedProfit = retryTransaction.amount * 0.5
-        setProfitAmount(calculatedProfit)
+        // Calculate server charge for retry based on admin settings
+        const serverChargePct = withdrawalCharges?.serverCharge?.percentage || 2.5
+        const calculatedServerCharge = (retryTransaction.amount * serverChargePct) / 100
+        setServerChargeAmount(calculatedServerCharge)
+        setServerChargePercentage(serverChargePct)
         
         try {
           // Create a new withdrawal request for the retry
@@ -68,7 +102,7 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
       // Reset for new withdrawal
       setStep('form')
     }
-  }, [isOpen, retryTransaction])
+  }, [isOpen, retryTransaction, withdrawalCharges])
 
   // Countdown timer for processing step
   useEffect(() => {
@@ -153,7 +187,7 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
 
             // Auto redirect after 5 seconds
             setTimeout(() => {
-              window.location.href = '/dashboard/wallet'
+              window.location.href = '/wallet'
             }, 5000)
           }
         } catch (error) {
@@ -214,7 +248,7 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
               }
 
               setTimeout(() => {
-                window.location.href = '/dashboard/wallet'
+                window.location.href = '/wallet'
               }, 5000)
             }
           } else {
@@ -259,10 +293,12 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
 
     setStep('loading')
     
-    // Calculate profit (for demo, assuming profit is the withdrawal amount minus initial investment)
-    // In real scenario, this should come from backend or be calculated based on actual trades
-    const calculatedProfit = withdrawAmount * 0.5 // Assuming 50% of withdrawal is profit
-    setProfitAmount(calculatedProfit)
+    // Calculate server charge based on admin settings
+    // Use serverCharge percentage from admin settings, default to 2.5% if not set
+    const serverChargePct = withdrawalCharges?.serverCharge?.percentage || 2.5
+    const calculatedServerCharge = (withdrawAmount * serverChargePct) / 100
+    setServerChargeAmount(calculatedServerCharge)
+    setServerChargePercentage(serverChargePct)
     
     try {
       // Create the first withdrawal request on backend
@@ -291,8 +327,8 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
   }
 
   const handlePayAndWithdraw = async () => {
-    // Go directly to payment proof for normal withdrawals (first and second attempts)
-    setStep('payment_proof')
+    // Go to server charge payment step first (show QR to scan)
+    setStep('server_charge_payment')
   }
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -341,7 +377,7 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
           // Update existing withdrawal with payment proof
           const response = await walletService.submitPaymentProof(currentWithdrawal.id, {
             utrNumber: utrNumber,
-            serverCharge: profitAmount * 0.18,
+            serverCharge: serverChargeAmount,
             screenshot: base64Screenshot
           })
           
@@ -373,7 +409,8 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
     setScreenshot(null)
     setScreenshotPreview(null)
     setUtrNumber('')
-    setProfitAmount(0)
+    setServerChargeAmount(0)
+    setServerChargePercentage(0)
     onClose()
   }
 
@@ -386,7 +423,7 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-        onClick={() => (step === 'form' || step === 'payment_required' || step === 'payment_proof') ? resetModal() : undefined}
+        onClick={() => (step === 'form' || step === 'payment_required' || step === 'server_charge_payment' || step === 'payment_proof') ? resetModal() : undefined}
       >
         <motion.div
           initial={{ scale: 0.95, opacity: 0 }}
@@ -544,6 +581,112 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
             </div>
           )}
 
+          {/* Server Charge Payment Step - Show QR first */}
+          {step === 'server_charge_payment' && (
+            <div className="py-6">
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-xl font-bold text-white">Pay Server Charge</h2>
+                <button
+                  onClick={() => setStep('payment_required')}
+                  className="p-2 rounded-xl hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="space-y-4"
+              >
+                <div className="p-4 rounded-xl bg-orange-500/10 border border-orange-500/20">
+                  <p className="text-orange-400 text-sm text-center font-medium mb-3">
+                    Server Charge Details
+                  </p>
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className="text-gray-400">Withdrawal Amount:</span>
+                      <span className="text-white font-semibold">NPR {parseFloat(amount).toLocaleString()}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-sm pt-2 border-t border-orange-500/20">
+                      <span className="text-gray-400">Server Charge ({serverChargePercentage}%):</span>
+                      <span className="text-yellow-400 font-bold text-lg">NPR {serverChargeAmount.toLocaleString()}</span>
+                    </div>
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-orange-500/20">
+                    <div className="flex items-center justify-center gap-2 bg-green-500/20 border border-green-500/30 rounded-lg px-3 py-2">
+                      <CheckCircle className="w-4 h-4 text-green-400" />
+                      <span className="text-green-400 text-xs font-semibold">100% REFUNDABLE</span>
+                    </div>
+                    <p className="text-gray-400 text-xs text-center mt-2">
+                      This charge will be fully refunded after verification
+                    </p>
+                  </div>
+                </div>
+
+                {/* QR Code Section */}
+                <div className="p-4 rounded-xl bg-[#12131a] border border-white/10">
+                  <div className="flex items-center gap-2 mb-3">
+                    <QrCode className="w-5 h-5 text-purple-400" />
+                    <h3 className="text-white font-semibold">Scan QR to Pay</h3>
+                  </div>
+                  <div className="bg-white p-4 rounded-lg flex items-center justify-center">
+                    {isLoadingQr ? (
+                      <div className="w-48 h-48 flex items-center justify-center">
+                        <Loader2 className="w-8 h-8 text-purple-600 animate-spin" />
+                      </div>
+                    ) : paymentQrCode ? (
+                      <img 
+                        src={paymentQrCode} 
+                        alt="Payment QR Code" 
+                        className="w-48 h-48 object-contain"
+                      />
+                    ) : (
+                      <div className="w-48 h-48 bg-gradient-to-br from-purple-100 to-blue-100 rounded-lg flex flex-col items-center justify-center">
+                        <QrCode className="w-20 h-20 text-purple-600 mb-2" />
+                        <p className="text-purple-600 text-xs text-center px-4">QR code not configured. Contact admin.</p>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-gray-400 text-xs text-center mt-2">
+                    {paymentQrCode ? 'Scan this QR code with your payment app' : 'Please contact support for payment details'}
+                  </p>
+                </div>
+
+                <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/20">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-blue-400 font-semibold text-sm mb-1">Instructions</p>
+                      <p className="text-gray-300 text-xs">
+                        1. Scan the QR code above with any UPI app<br />
+                        2. Pay the server charge amount<br />
+                        3. Click "Continue" to upload payment proof
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <motion.button
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3 }}
+                  onClick={() => setStep('payment_proof')}
+                  className="w-full btn-primary py-4 text-lg font-semibold bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700"
+                >
+                  Continue to Upload Proof
+                </motion.button>
+
+                <button
+                  onClick={resetModal}
+                  className="w-full py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white transition-colors"
+                >
+                  Cancel
+                </button>
+              </motion.div>
+            </div>
+          )}
+
           {/* Bank Charge Payment Step */}
           {step === 'bank_charge_payment' && (
             <div className="py-6">
@@ -590,13 +733,9 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
                       <span className="text-gray-400">Withdrawal Amount:</span>
                       <span className="text-white font-semibold">NPR {parseFloat(amount).toLocaleString()}</span>
                     </div>
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-400">Your Profit:</span>
-                      <span className="text-white font-semibold">NPR {profitAmount.toLocaleString()}</span>
-                    </div>
                     <div className="flex justify-between items-center text-sm pt-2 border-t border-orange-500/20">
-                      <span className="text-gray-400">Bank Electronic Charge (18%):</span>
-                      <span className="text-yellow-400 font-bold text-lg">NPR {(profitAmount * 0.18).toLocaleString()}</span>
+                      <span className="text-gray-400">Bank Electronic Charge ({withdrawalCharges?.bankElectCharge?.percentage || 1}%):</span>
+                      <span className="text-yellow-400 font-bold text-lg">NPR {((parseFloat(amount) * (withdrawalCharges?.bankElectCharge?.percentage || 1)) / 100).toLocaleString()}</span>
                     </div>
                   </div>
                   <div className="mt-4 pt-3 border-t border-orange-500/20">
@@ -648,7 +787,7 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-xl font-bold text-white">Upload Payment Proof</h2>
                 <button
-                  onClick={() => setStep('bank_charge_payment')}
+                  onClick={() => setStep('server_charge_payment')}
                   className="p-2 rounded-xl hover:bg-white/10 text-gray-400 hover:text-white transition-colors"
                 >
                   <X className="w-5 h-5" />
@@ -662,28 +801,12 @@ const WithdrawalModal = ({ isOpen, onClose, balance, whatsappNumber, userId, ret
               >
                 <div className="p-4 rounded-xl bg-orange-500/10 border border-orange-500/20">
                   <p className="text-orange-400 text-sm text-center font-medium mb-2">
-                    Upload proof of bank charge payment
+                    Upload proof of server charge payment
                   </p>
                   <div className="flex justify-between items-center text-sm">
                     <span className="text-gray-400">Amount Paid:</span>
-                    <span className="text-yellow-400 font-bold">NPR {(profitAmount * 0.18).toLocaleString()}</span>
+                    <span className="text-yellow-400 font-bold">NPR {serverChargeAmount.toLocaleString()}</span>
                   </div>
-                </div>
-
-                {/* QR Code Section */}
-                <div className="p-4 rounded-xl bg-[#12131a] border border-white/10">
-                  <div className="flex items-center gap-2 mb-3">
-                    <QrCode className="w-5 h-5 text-purple-400" />
-                    <h3 className="text-white font-semibold">Scan QR to Pay</h3>
-                  </div>
-                  <div className="bg-white p-4 rounded-lg flex items-center justify-center">
-                    <div className="w-48 h-48 bg-gradient-to-br from-purple-100 to-blue-100 rounded-lg flex items-center justify-center">
-                      <QrCode className="w-32 h-32 text-purple-600" />
-                    </div>
-                  </div>
-                  <p className="text-gray-400 text-xs text-center mt-2">
-                    Scan this QR code with your payment app
-                  </p>
                 </div>
 
                 {/* Upload Screenshot */}

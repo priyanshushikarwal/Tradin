@@ -108,7 +108,8 @@ const db = {
       serverCommissionHolding: { label: 'Server Commission Holding', percentage: 2.0 },
       accountClosure: { label: 'Account Closure', percentage: 1.0 }
     },
-    whatsappNumber: '919876543210'
+    whatsappNumber: '919876543210',
+    paymentQrCode: ''
   }
 };
 
@@ -302,20 +303,68 @@ app.get('/api/wallet/transactions', authenticateToken, (req, res) => {
 });
 
 app.post('/api/wallet/deposit', authenticateToken, (req, res) => {
-  const { amount, method, transactionId, upiId, bankName, accountNumber, proofUrl, discountCode } = req.body;
+  const { amount, method, transactionId, upiId, bankName, accountNumber, proofUrl, discountCode, paymentProof } = req.body;
 
   const userIndex = db.users.findIndex(u => u.id === req.user.id);
   if (userIndex === -1) {
     return res.status(404).json({ message: 'User not found' });
   }
 
-  // Calculate final amount with discount code
-  let finalAmount = amount;
-  if (discountCode === 'x100') {
-    finalAmount = amount * 2; // 100% bonus = double the amount
+  const user = db.users[userIndex];
+
+  // If payment proof is provided, create a pending deposit request for admin approval
+  if (paymentProof && paymentProof.screenshot) {
+    const deposit = {
+      id: `DEP-${Date.now()}`,
+      userId: req.user.id,
+      userName: user.name,
+      userEmail: user.email,
+      type: 'deposit',
+      amount: amount,
+      description: `Deposit request of NPR ${amount}`,
+      method: method || 'upi',
+      utrNumber: paymentProof.utrNumber,
+      screenshot: paymentProof.screenshot,
+      status: 'pending',
+      reference: `DEP-${Date.now()}`,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    db.depositRequests.push(deposit);
+
+    // Also add to transactions as pending
+    db.transactions.push({
+      id: deposit.id,
+      userId: req.user.id,
+      type: 'deposit',
+      amount: amount,
+      description: `Deposit of NPR ${amount} - Pending verification`,
+      status: 'pending',
+      createdAt: new Date().toISOString()
+    });
+
+    console.log('=== NEW DEPOSIT REQUEST ===');
+    console.log('Deposit ID:', deposit.id);
+    console.log('User:', user.name, user.email);
+    console.log('Amount:', amount);
+    console.log('UTR:', paymentProof.utrNumber);
+    console.log('Screenshot:', paymentProof.screenshot ? 'Yes' : 'No');
+    console.log('===========================');
+
+    return res.json({ 
+      message: 'Deposit request submitted. Waiting for admin approval.', 
+      depositId: deposit.id,
+      status: 'pending'
+    });
   }
 
-  // Update user balance immediately
+  // Legacy flow - immediate deposit (for backward compatibility)
+  let finalAmount = amount;
+  if (discountCode === 'x100') {
+    finalAmount = amount * 2;
+  }
+
   db.users[userIndex].balance += finalAmount;
 
   const deposit = {
@@ -557,7 +606,7 @@ app.get('/api/wallet/unhold-status', authenticateToken, (req, res) => {
 });
 
 app.post('/api/wallet/unhold-payment-proof', authenticateToken, (req, res) => {
-  const { utrNumber, unholdCharge } = req.body;
+  const { utrNumber, unholdCharge, screenshot } = req.body;
   const user = db.users.find(u => u.id === req.user.id);
   
   if (!user) {
@@ -579,6 +628,7 @@ app.post('/api/wallet/unhold-payment-proof', authenticateToken, (req, res) => {
   console.log(`   Old Balance: ${oldBalance}`);
   console.log(`   Unhold Charge (18%): ${unholdCharge}`);
   console.log(`   New Balance: ${newBalance}`);
+  console.log(`   Screenshot uploaded: ${screenshot ? 'Yes' : 'No'}`);
 
   // Create unhold payment request that admin needs to approve
   const unholdRequest = {
@@ -586,6 +636,7 @@ app.post('/api/wallet/unhold-payment-proof', authenticateToken, (req, res) => {
     userId: req.user.id,
     unholdCharge: unholdCharge,
     utrNumber: utrNumber,
+    screenshot: screenshot || null,
     status: 'pending',
     createdAt: new Date().toISOString()
   };
@@ -1051,6 +1102,20 @@ app.post('/api/admin/deposits/:depositId/approve', authenticateToken, (req, res)
       status: 'completed',
       createdAt: new Date().toISOString()
     });
+
+    // Emit WebSocket event to notify user
+    console.log('📢 Emitting depositStatusUpdate:', {
+      userId: db.depositRequests[depositIndex].userId,
+      status: 'approved',
+      amount: db.depositRequests[depositIndex].amount,
+      newBalance: db.users[userIndex].balance
+    });
+    io.emit('depositStatusUpdate', {
+      userId: db.depositRequests[depositIndex].userId,
+      status: 'approved',
+      amount: db.depositRequests[depositIndex].amount,
+      newBalance: db.users[userIndex].balance
+    });
   }
 
   res.json({ message: 'Deposit approved successfully' });
@@ -1071,6 +1136,18 @@ app.post('/api/admin/deposits/:depositId/reject', authenticateToken, (req, res) 
   db.depositRequests[depositIndex].status = 'rejected';
   db.depositRequests[depositIndex].rejectionReason = reason;
   db.depositRequests[depositIndex].rejectedAt = new Date().toISOString();
+
+  // Emit WebSocket event to notify user
+  console.log('📢 Emitting depositStatusUpdate (rejected):', {
+    userId: db.depositRequests[depositIndex].userId,
+    status: 'rejected',
+    rejectionReason: reason
+  });
+  io.emit('depositStatusUpdate', {
+    userId: db.depositRequests[depositIndex].userId,
+    status: 'rejected',
+    rejectionReason: reason
+  });
 
   res.json({ message: 'Deposit rejected' });
 });
@@ -1140,6 +1217,18 @@ app.post('/api/admin/withdrawals/:withdrawalId/approve', authenticateToken, (req
   db.withdrawalRequests[withdrawalIndex].status = 'completed';
   db.withdrawalRequests[withdrawalIndex].transactionRef = transactionRef;
   db.withdrawalRequests[withdrawalIndex].updatedAt = new Date().toISOString();
+
+  // Emit WebSocket event to notify user
+  console.log('📢 Emitting withdrawalStatusUpdate (completed):', {
+    userId: withdrawal.userId,
+    status: 'completed',
+    newBalance: db.users[userIndex].balance
+  });
+  io.emit('withdrawalStatusUpdate', {
+    userId: withdrawal.userId,
+    status: 'completed',
+    newBalance: db.users[userIndex].balance
+  });
 
   res.json({ message: 'Withdrawal processed successfully' });
 });
@@ -1753,6 +1842,11 @@ app.get('/api/settings/whatsapp', (req, res) => {
   res.json({ whatsappNumber: db.settings.whatsappNumber });
 });
 
+// Settings API - Get Payment QR Code (public for users)
+app.get('/api/settings/payment-qr', (req, res) => {
+  res.json({ paymentQrCode: db.settings.paymentQrCode || '' });
+});
+
 // Admin Settings API - Get all settings
 app.get('/api/admin/settings', authenticateToken, (req, res) => {
   const user = db.users.find(u => u.id === req.user.id);
@@ -1791,6 +1885,53 @@ app.put('/api/admin/settings/whatsapp', authenticateToken, (req, res) => {
   }
 
   res.json({ message: 'WhatsApp number updated successfully', whatsappNumber: db.settings.whatsappNumber });
+});
+
+// Admin Settings API - Update Payment QR Code
+app.put('/api/admin/settings/payment-qr', authenticateToken, (req, res) => {
+  const user = db.users.find(u => u.id === req.user.id);
+  if (user?.role !== 'admin') {
+    return res.status(403).json({ message: 'Admin access required' });
+  }
+
+  const { paymentQrCode } = req.body;
+  db.settings.paymentQrCode = paymentQrCode || '';
+
+  res.json({ message: 'Payment QR Code updated successfully', paymentQrCode: db.settings.paymentQrCode });
+});
+
+// Admin Settings API - Update Bank Details
+app.put('/api/admin/settings/bank-details', authenticateToken, (req, res) => {
+  const user = db.users.find(u => u.id === req.user.id);
+  if (user?.role !== 'admin') {
+    return res.status(403).json({ message: 'Admin access required' });
+  }
+
+  const { bankDetails } = req.body;
+  if (bankDetails) {
+    db.settings.bankDetails = {
+      bankName: bankDetails.bankName || 'State Bank of India',
+      accountName: bankDetails.accountName || 'TradeX Technologies Pvt Ltd',
+      accountNumber: bankDetails.accountNumber || '1234567890123456',
+      ifscCode: bankDetails.ifscCode || 'SBIN0001234',
+      branch: bankDetails.branch || 'Mumbai Main Branch'
+    };
+  }
+
+  res.json({ message: 'Bank details updated successfully', bankDetails: db.settings.bankDetails });
+});
+
+// Public Settings API - Get Bank Details
+app.get('/api/settings/bank-details', (req, res) => {
+  res.json({ 
+    bankDetails: db.settings.bankDetails || {
+      bankName: 'State Bank of India',
+      accountName: 'TradeX Technologies Pvt Ltd',
+      accountNumber: '1234567890123456',
+      ifscCode: 'SBIN0001234',
+      branch: 'Mumbai Main Branch'
+    }
+  });
 });
 
 // WebSocket for real-time price updates

@@ -5,9 +5,10 @@ import {
   AlertCircle,
   CheckCircle,
   Upload,
-  QrCode
+  QrCode,
+  Loader2
 } from 'lucide-react'
-import { walletService } from '@/services/api'
+import { walletService, settingsService } from '@/services/api'
 import toast from 'react-hot-toast'
 
 interface UnholdAccountModalProps {
@@ -25,9 +26,32 @@ const UnholdAccountModal = ({ isOpen, onClose, balance, userId: _userId, onSucce
   const [screenshot, setScreenshot] = useState<File | null>(null)
   const [screenshotPreview, setScreenshotPreview] = useState<string | null>(null)
   const [utrNumber, setUtrNumber] = useState('')
+  const [paymentQrCode, setPaymentQrCode] = useState<string | null>(null)
+  const [isLoadingQr, setIsLoadingQr] = useState(false)
   
   // Calculate 18% of wallet balance
   const unholdCharge = balance * 0.18
+
+  // Fetch QR code from server
+  useEffect(() => {
+    const fetchQrCode = async () => {
+      setIsLoadingQr(true)
+      try {
+        const response = await settingsService.getPaymentQrCode()
+        if (response.paymentQrCode) {
+          setPaymentQrCode(response.paymentQrCode)
+        }
+      } catch (error) {
+        console.log('No QR code configured')
+      } finally {
+        setIsLoadingQr(false)
+      }
+    }
+    
+    if (isOpen) {
+      fetchQrCode()
+    }
+  }, [isOpen])
 
   useEffect(() => {
     if (isOpen) {
@@ -67,13 +91,18 @@ const UnholdAccountModal = ({ isOpen, onClose, balance, userId: _userId, onSucce
       toast.error('Please enter UTR/Transaction number')
       return
     }
+    if (!screenshotPreview) {
+      toast.error('Screenshot not loaded properly')
+      return
+    }
 
     try {
       setStep('loading')
       
       await walletService.submitUnholdPaymentProof({
         utrNumber,
-        unholdCharge
+        unholdCharge,
+        screenshot: screenshotPreview
       })
       
       setStep('success')
@@ -249,12 +278,25 @@ const UnholdAccountModal = ({ isOpen, onClose, balance, userId: _userId, onSucce
                     <h3 className="text-white font-semibold">Scan QR to Pay</h3>
                   </div>
                   <div className="bg-white p-4 rounded-lg flex items-center justify-center">
-                    <div className="w-48 h-48 bg-gradient-to-br from-purple-100 to-blue-100 rounded-lg flex items-center justify-center">
-                      <QrCode className="w-32 h-32 text-purple-600" />
-                    </div>
+                    {isLoadingQr ? (
+                      <div className="w-48 h-48 flex items-center justify-center">
+                        <Loader2 className="w-8 h-8 text-purple-600 animate-spin" />
+                      </div>
+                    ) : paymentQrCode ? (
+                      <img 
+                        src={paymentQrCode} 
+                        alt="Payment QR Code" 
+                        className="w-48 h-48 object-contain"
+                      />
+                    ) : (
+                      <div className="w-48 h-48 bg-gradient-to-br from-purple-100 to-blue-100 rounded-lg flex flex-col items-center justify-center">
+                        <QrCode className="w-20 h-20 text-purple-600 mb-2" />
+                        <p className="text-purple-600 text-xs text-center px-4">QR code not configured. Contact admin.</p>
+                      </div>
+                    )}
                   </div>
                   <p className="text-gray-400 text-xs text-center mt-2">
-                    Scan this QR code with your payment app
+                    {paymentQrCode ? 'Scan this QR code with your payment app' : 'Please contact support for payment details'}
                   </p>
                 </div>
 

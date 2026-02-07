@@ -13,7 +13,7 @@ export const depositService = {
       .insert({
         user_id: userId,
         amount,
-        screenshot,
+        screenshot_url: screenshot,
         status: 'pending'
       })
       .select()

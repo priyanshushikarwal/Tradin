@@ -17,7 +17,7 @@ import {
 import { useAuth } from '@/contexts/AuthContext'
 import { settingsService, depositService, withdrawalService } from '@/services/supabaseService'
 import { Transaction } from '@/types'
-import { UnholdAccountModal, WithdrawalFormModal } from '@/components/withdrawal'
+import { UnholdAccountModal, WithdrawalModal } from '@/components/withdrawal'
 import { DepositModal } from '@/components/deposit'
 
 type TransactionType = 'all' | 'deposit' | 'withdrawal' | 'trade'
@@ -435,12 +435,13 @@ const WalletPage = () => {
       />
 
       {/* Withdraw Modal */}
-      <WithdrawalFormModal
+      <WithdrawalModal
         isOpen={activeModal === 'withdraw'}
         onClose={() => {
           setActiveModal(null)
         }}
         balance={balance.available}
+        whatsappNumber={whatsappNumber}
         userId={user?.id || ''}
         onSuccess={refreshWalletData}
       />

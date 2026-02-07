@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS public.withdrawals (
   admin_note TEXT,
   admin_transaction_ref TEXT,
   payment_proof TEXT,
+  screenshot TEXT,
   processing_end_time TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
